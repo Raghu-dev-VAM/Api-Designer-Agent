@@ -7,13 +7,7 @@ export const sources: Source[] = [
   { id: 'excel', name: 'Excel / CSV', desc: '.xlsx, .csv', color: '#dcfce7', icon: 'sheet' }
 ];
 
-export const requirements: Requirement[] = [
-  { id: 'FR-001', title: 'Create Policy', desc: 'User should be able to create a policy', source: 'Jira: PROJ-123', priority: 'High', method: 'post', path: '/policies', summary: 'Create a new policy', status: 'Approved' },
-  { id: 'FR-002', title: 'Validate Customer Details', desc: 'System should validate customer details', source: 'Confluence: Page-45', priority: 'Medium', method: 'post', path: '/customers/validate', summary: 'Validate customer details', status: 'Approved' },
-  { id: 'FR-003', title: 'Fetch Policy by Policy Number', desc: 'System should fetch policy by policy number', source: 'Azure DevOps: Task-678', priority: 'High', method: 'get', path: '/policies/{policyNumber}', summary: 'Fetch policy by policy number', status: 'Draft' },
-  { id: 'FR-004', title: 'Update Policy Status', desc: 'User should be able to update policy status', source: 'Excel: Sheet1', priority: 'Medium', method: 'patch', path: '/policies/{policyNumber}/status', summary: 'Update policy status', status: 'Draft' },
-  { id: 'FR-005', title: 'Cancel Policy', desc: 'User should be able to cancel a policy', source: 'Local File: requirements.txt', priority: 'High', method: 'post', path: '/policies/{policyNumber}/cancel', summary: 'Cancel an active policy', status: 'Rejected' },
-];
+export const requirements: Requirement[] = [];
 
 export const artifacts: [string, string, string, string][] = [
   ['OpenAPI Specification (YAML/JSON)', 'Complete OpenAPI 3.0 specification', 'doc', '#ccfbf1'],

@@ -28,11 +28,12 @@ def main():
         print(f"Documentation: http://{args.host}:{args.port}/docs")
         
         uvicorn.run(
-            app,
+            "main:app",
             host=args.host,
             port=args.port,
-            reload=args.reload,
-            log_level="info"
+            reload=False,
+            log_level="debug",
+            workers=1
         )
     except ImportError as e:
         print(f"Error: Failed to import required modules: {e}")

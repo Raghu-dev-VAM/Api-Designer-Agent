@@ -7,6 +7,8 @@ import httpx
 import json
 import yaml
 import logging
+from itertools import cycle
+from typing import List
 from models import GenerateRequest, ValidateResponse
 
 
@@ -16,11 +18,19 @@ logger = logging.getLogger(__name__)
 class GroqService:
     """Service for interacting with Groq API for AI-powered OpenAPI generation."""
 
-    def __init__(self, api_key: str, model: str = "llama-3.3-70b-versatile", base_url: str = "https://api.groq.com/openai/v1/chat/completions"):
-        self.api_key = api_key
+    def __init__(self, api_keys: List[str], model: str = "llama-3.3-70b-versatile", base_url: str = "https://api.groq.com/openai/v1/chat/completions"):
+        if not api_keys:
+            raise ValueError("At least one API key must be provided")
+        self._key_cycle = cycle(api_keys)
         self.model = model
         self.base_url = base_url
         self.client = httpx.AsyncClient(timeout=120.0)
+
+    @property
+    def api_key(self) -> str:
+        current_key = next(self._key_cycle)
+        logger.debug("Using Groq API key: %s", current_key[:8] + "..." if current_key else "None")
+        return current_key
 
     async def generate_openapi(self, request: GenerateRequest) -> str:
         requirements_list = "\n".join([

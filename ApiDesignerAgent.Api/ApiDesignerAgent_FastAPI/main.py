@@ -39,7 +39,7 @@ app.add_middleware(
 )
 
 # Initialize services
-groq_service = GroqService(settings.groq_api_key)
+groq_service = GroqService(settings.groq_api_keys)
 python_service = PythonService()
 
 
@@ -179,7 +179,7 @@ async def extract_requirements_from_document(file: UploadFile = File(...)):
 Return a JSON array only (no markdown, no explanation) where each item has:
 - id: string like "FR-001"
 - title: short title
-- desc: five-sentence description
+- desc: two-sentence description
 - source: "Uploaded Document"
 - priority: "High", "Medium", or "Low"
 - status: "Draft"

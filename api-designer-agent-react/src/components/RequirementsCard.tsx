@@ -4,7 +4,7 @@ import type { Requirement } from '../types';
 
 interface RequirementsCardProps {
   requirements: Requirement[];
-  selectedRequirement: Requirement;
+  selectedRequirement: Requirement | null;
   search: string;
   tab: string;
   onTabChange: (tab: string) => void;
@@ -26,7 +26,7 @@ export default function RequirementsCard({
   requirements, selectedRequirement, search, tab,
   onTabChange, onSearchChange, onSelectRequirement, onStatusChange, onGenerate, onFilter, onRefresh
 }: RequirementsCardProps) {
-  const canGenerate = selectedRequirement.status === 'Approved';
+  const canGenerate = selectedRequirement?.status === 'Approved';
 
   return (
     <article className="card requirements-card">
@@ -50,8 +50,11 @@ export default function RequirementsCard({
         )}
 
         <div className="requirements-list">
+          {requirements.length === 0 && (
+            <p className="hint" style={{ padding: '1rem', textAlign: 'center' }}>Upload a document to extract requirements.</p>
+          )}
           {requirements.map((req) => (
-            <div key={req.id} className={`req-item ${selectedRequirement.id === req.id ? 'active' : ''}`}>
+            <div key={req.id} className={`req-item ${selectedRequirement?.id === req.id ? 'active' : ''}`}>
               <button className="req-item-body" onClick={() => onSelectRequirement(req)}>
                 <strong>{req.id}: {req.title}</strong>
                 <span>{req.desc}</span>

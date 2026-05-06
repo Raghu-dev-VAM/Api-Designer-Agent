@@ -7,13 +7,13 @@ import ArtifactsCard from './components/ArtifactsCard';
 import ActionsCard from './components/ActionsCard';
 import FeaturesCard from './components/FeaturesCard';
 import UserStoryReviewPanel from './components/UserStoryReviewPanel';
-import { sources, requirements as defaultRequirements } from './data';
+import { sources } from './data';
 import { extractRequirementsFromDocx, generateOpenApi } from './services/documentService';
 import type { ActivityItem, Requirement } from './types';
 
 export default function App() {
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>(sources.map((s) => s.id));
-  const [requirements, setRequirements] = useState<Requirement[]>(defaultRequirements);
+  const [requirements, setRequirements] = useState<Requirement[]>([]);
 
   // Review flow state
   const [reviewingStory, setReviewingStory] = useState<Requirement | null>(null);
@@ -30,7 +30,7 @@ export default function App() {
   const [lastGeneratedAt, setLastGeneratedAt] = useState('—');
   const [uploading, setUploading] = useState(false);
 
-  const selectedRequirement = confirmedStory ?? requirements[0];
+  const selectedRequirement = confirmedStory;
 
   const visibleRequirements = requirements.filter((req) =>
     `${req.id} ${req.title} ${req.desc}`.toLowerCase().includes(search.toLowerCase())
@@ -64,36 +64,22 @@ export default function App() {
     }
   };
 
-  // ── Review panel handlers ───────────────────────────────────────────────────
-  const handleReview = (req: Requirement) => setReviewingStory(req);
-
-  const handleConfirm = (story: Requirement) => {
-    const approved: Requirement = { ...story, status: 'Approved' };
-    setRequirements((cur) => cur.map((r) => r.id === approved.id ? approved : r));
-    setConfirmedStory(approved);
-    setReviewingStory(null);
-    setGeneratedSpec('');
-    setToast(`Story ${approved.id} approved — ready to generate`);
-    setActivity((cur) => [{ label: 'Approved', value: `${approved.id}: ${approved.title}` }, ...cur.slice(0, 2)]);
-  };
-
   // ── Generate OpenAPI via backend ────────────────────────────────────────────
   const handleGenerate = async () => {
-    const story = confirmedStory ?? requirements.find((r) => r.status === 'Approved');
-    if (!story) {
+    if (!selectedRequirement) {
       setToast('No approved requirement selected. Approve a requirement first.');
       return;
     }
     setIsGenerating(true);
     setGeneratedSpec('');
-    setToast(`Generating OpenAPI for ${story.id}…`);
+    setToast(`Generating OpenAPI for ${selectedRequirement.id}…`);
     try {
-      const result = await generateOpenApi(story);
+      const result = await generateOpenApi(selectedRequirement);
       const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       setGeneratedSpec(result.yaml);
       setLastGeneratedAt(now);
-      setToast(`OpenAPI spec generated for ${story.id}`);
-      setActivity((cur) => [{ label: 'Generated', value: `${story.id}: ${story.title}` }, ...cur.slice(0, 2)]);
+      setToast(`OpenAPI spec generated for ${selectedRequirement.id}`);
+      setActivity((cur) => [{ label: 'Generated', value: `${selectedRequirement.id}: ${selectedRequirement.title}` }, ...cur.slice(0, 2)]);
     } catch (err: unknown) {
       setToast(err instanceof Error ? err.message : 'Generation failed');
     } finally {
@@ -168,7 +154,7 @@ export default function App() {
           tab={tab}
           onTabChange={setTab}
           onSearchChange={setSearch}
-          onSelectRequirement={handleReview}
+          onSelectRequirement={(req) => setReviewingStory(req)}
           onStatusChange={handleStatusChange}
           onGenerate={handleGenerate}
           onFilter={() => setToast('Filtered high-confidence requirements')}
@@ -212,7 +198,15 @@ export default function App() {
       <UserStoryReviewPanel
         story={reviewingStory}
         onClose={() => setReviewingStory(null)}
-        onConfirm={handleConfirm}
+        onConfirm={(story) => {
+          const approved: Requirement = { ...story, status: 'Approved' };
+          setRequirements((cur) => cur.map((r) => r.id === approved.id ? approved : r));
+          setConfirmedStory(approved);
+          setReviewingStory(null);
+          setGeneratedSpec('');
+          setToast(`Story ${approved.id} approved — ready to generate`);
+          setActivity((cur) => [{ label: 'Approved', value: `${approved.id}: ${approved.title}` }, ...cur.slice(0, 2)]);
+        }}
       />
     </main>
   );
