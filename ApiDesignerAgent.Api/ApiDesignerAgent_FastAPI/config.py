@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     """Application settings."""
 
     # Groq API Configuration
-    groq_api_key: str = os.getenv("GROQ_API_KEY", "")
+    groq_api_key: str = os.getenv("GROQ_API_KEY", "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")
     groq_model: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
     groq_base_url: str = os.getenv("GROQ_BASE_URL", "https://api.groq.com/openai/v1/chat/completions")
 
@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     port: int = int(os.getenv("PORT", "8000"))
 
     # CORS Configuration
-    cors_origins_str: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,https://api-designer-agent-7xvn.onrender.com/")
+    cors_origins_str: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,https://api-designer-agent-7xvn.onrender.com/,*")
 
     @property
     def cors_origins(self) -> list:
