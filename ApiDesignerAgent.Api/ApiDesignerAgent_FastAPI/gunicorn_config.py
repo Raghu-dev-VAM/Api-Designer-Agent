@@ -2,9 +2,9 @@
 Deployment configurations for the FastAPI application.
 """
 
-# For Gunicorn (production ASGI server)
-# gunicorn_config.py
-bind = "0.0.0.0:8000"
+import os
+
+bind = f"0.0.0.0:{os.getenv('PORT', '10000')}"
 workers = 4
 worker_class = "uvicorn.workers.UvicornWorker"
 max_requests = 1000

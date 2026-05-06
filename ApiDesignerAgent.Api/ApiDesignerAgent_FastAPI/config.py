@@ -25,7 +25,13 @@ class Settings(BaseSettings):
     port: int = int(os.getenv("PORT", "8000"))
 
     # CORS Configuration
-    cors_origins: list = ["http://localhost:5173", "http://localhost:4173", "http://127.0.0.1:5173", "*"]
+    cors_origins_str: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173")
+
+    @property
+    def cors_origins(self) -> list:
+        origins = [o.strip() for o in self.cors_origins_str.split(",") if o.strip()]
+        return origins if origins else ["*"]
+
     cors_credentials: bool = True
     cors_methods: list = ["*"]
     cors_headers: list = ["*"]
