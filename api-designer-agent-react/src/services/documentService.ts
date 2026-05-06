@@ -1,12 +1,11 @@
 import type { Requirement } from '../types';
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8000';
+import { config } from '../config';
 
 export async function extractRequirementsFromDocx(file: File): Promise<Requirement[]> {
   const form = new FormData();
   form.append('file', file);
 
-  const res = await fetch(`${API_BASE}/api/designer/extract-requirements`, {
+  const res = await fetch(`${config.apiBaseUrl}/api/designer/extract-requirements`, {
     method: 'POST',
     body: form,
   });
@@ -37,7 +36,7 @@ export async function generateOpenApi(requirement: Requirement): Promise<{ yaml:
     api_version: '1.0.0',
   };
 
-  const res = await fetch(`${API_BASE}/api/designer/generate`, {
+  const res = await fetch(`${config.apiBaseUrl}/api/designer/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
