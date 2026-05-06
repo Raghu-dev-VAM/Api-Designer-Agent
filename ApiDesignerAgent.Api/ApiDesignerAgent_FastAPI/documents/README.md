@@ -67,7 +67,7 @@ GROQ_API_KEY=your_api_key_here
 
 Start the development server:
 ```bash
-python main.py
+python run.py
 ```
 
 Or using uvicorn directly:

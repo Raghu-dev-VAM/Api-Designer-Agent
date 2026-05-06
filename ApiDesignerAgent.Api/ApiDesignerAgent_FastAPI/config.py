@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     port: int = int(os.getenv("PORT", "8000"))
 
     # CORS Configuration
-    cors_origins_str: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173")
+    cors_origins_str: str = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://localhost:4173,http://127.0.0.1:5173,https://api-designer-agent-7xvn.onrender.com/")
 
     @property
     def cors_origins(self) -> list:
