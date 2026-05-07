@@ -1,9 +1,12 @@
 import type { Requirement } from '../types';
 import { config } from '../config';
 
-export async function extractRequirementsFromDocx(file: File): Promise<Requirement[]> {
+export async function extractRequirementsFromDocx(file: File): Promise<{ requirements: Requirement[]; rawText: string }> {
   const form = new FormData();
   form.append('file', file);
+
+  // Extract raw text on the frontend directly from the docx file
+  const rawText = await extractRawText(file);
 
   const res = await fetch(`${config.apiBaseUrl}/api/designer/extract-requirements`, {
     method: 'POST',
@@ -19,7 +22,21 @@ export async function extractRequirementsFromDocx(file: File): Promise<Requireme
   }
 
   const data = await res.json();
-  return (data.requirements as Requirement[]).map((r) => ({ ...r, status: r.status ?? 'Draft' }));
+  return {
+    requirements: (data.requirements as Requirement[]).map((r) => ({ ...r, status: r.status ?? 'Draft' })),
+    rawText,
+  };
+}
+
+async function extractRawText(file: File): Promise<string> {
+  try {
+    const mammoth = await import('mammoth');
+    const arrayBuffer = await file.arrayBuffer();
+    const result = await mammoth.extractRawText({ arrayBuffer });
+    return result.value.trim();
+  } catch {
+    return '';
+  }
 }
 
 export async function generateOpenApi(requirement: Requirement): Promise<{ yaml: string }> {

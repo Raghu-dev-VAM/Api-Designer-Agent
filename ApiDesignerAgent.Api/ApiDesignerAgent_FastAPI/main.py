@@ -198,7 +198,7 @@ Document text:
             cleaned = cleaned.split("\n", 1)[-1]
             cleaned = cleaned.rsplit("```", 1)[0].strip()
         requirements = json.loads(cleaned)
-        return {"requirements": requirements}
+        return {"requirements": requirements, "raw_text": text}
     except Exception as ex:
         logger.error("Requirement extraction failed: %s", ex)
         raise HTTPException(status_code=500, detail=f"Extraction failed: {ex}")

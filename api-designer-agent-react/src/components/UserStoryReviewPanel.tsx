@@ -6,6 +6,7 @@ interface UserStoryReviewPanelProps {
   story: Requirement | null;
   onClose: () => void;
   onConfirm: (story: Requirement) => void;
+  viewOnly?: boolean;
 }
 
 const METHOD_COLORS: Record<string, string> = {
@@ -24,7 +25,7 @@ const METHOD_TEXT: Record<string, string> = {
   delete: '#991b1b',
 };
 
-export default function UserStoryReviewPanel({ story, onClose, onConfirm }: UserStoryReviewPanelProps) {
+export default function UserStoryReviewPanel({ story, onClose, onConfirm, viewOnly = false }: UserStoryReviewPanelProps) {
   const [edited, setEdited] = useState<Requirement | null>(null);
   const [isEditing, setIsEditing] = useState(false);
 
@@ -73,10 +74,12 @@ export default function UserStoryReviewPanel({ story, onClose, onConfirm }: User
             <span>{edited.title}</span>
           </div>
           <div className="review-panel-actions">
-            <button className="review-edit-btn" onClick={() => setIsEditing((v) => !v)}>
-              <Icon name={isEditing ? 'check' : 'eye'} size={14} />
-              {isEditing ? 'Done Editing' : 'Edit'}
-            </button>
+            {!viewOnly && (
+              <button className="review-edit-btn" onClick={() => setIsEditing((v) => !v)}>
+                <Icon name={isEditing ? 'check' : 'eye'} size={14} />
+                {isEditing ? 'Done Editing' : 'Edit'}
+              </button>
+            )}
             <button className="review-close-btn" onClick={onClose} aria-label="Close panel">
               <Icon name="plus" size={16} />
             </button>
@@ -199,11 +202,13 @@ export default function UserStoryReviewPanel({ story, onClose, onConfirm }: User
         </div>
 
         <div className="review-panel-footer">
-          <button className="review-cancel-btn" onClick={onClose}>Cancel</button>
-          <button className="review-confirm-btn" onClick={handleConfirm}>
-            <Icon name="spark" size={15} />
-            Approve requirements
-          </button>
+          <button className="review-cancel-btn" onClick={onClose}>Close</button>
+          {!viewOnly && (
+            <button className="review-confirm-btn" onClick={handleConfirm}>
+              <Icon name="spark" size={15} />
+              Approve requirements
+            </button>
+          )}
         </div>
 
       </div>
