@@ -235,6 +235,7 @@ export default function App() {
       />
 
       {uploading && <Loader message="Extracting requirements from document…" />}
+      {isGenerating && <Loader message="Generating OpenAPI specification…" />}
     </main>
   );
 }

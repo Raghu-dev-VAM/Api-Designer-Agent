@@ -1773,3 +1773,7 @@ footer span::before {
   pointer-events: none;
   white-space: nowrap;
 }
+
+.loader-box-floating {
+  pointer-events: none !important;
+}
