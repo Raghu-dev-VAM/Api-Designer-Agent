@@ -180,6 +180,7 @@ export default function App() {
             }
           }}
           onGenerate={handleGenerate}
+          isGenerating={isGenerating}
           onFilter={() => setToast('Filtered high-confidence requirements')}
           onRefresh={() => setToast('Requirements refreshed')}
         />
@@ -234,7 +235,6 @@ export default function App() {
       />
 
       {uploading && <Loader message="Extracting requirements from document…" />}
-      {isGenerating && <Loader message="Generating OpenAPI specification…" />}
     </main>
   );
 }

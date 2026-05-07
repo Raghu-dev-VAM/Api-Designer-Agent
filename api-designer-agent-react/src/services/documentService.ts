@@ -1,14 +1,21 @@
 import type { Requirement } from '../types';
 import { config } from '../config';
 
+const TIMEOUT_MS = 120_000; // 2 minutes — enough for Render cold start
+
+function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms = TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  return fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
+}
+
 export async function extractRequirementsFromDocx(file: File): Promise<{ requirements: Requirement[]; rawText: string }> {
   const form = new FormData();
   form.append('file', file);
 
-  // Extract raw text on the frontend directly from the docx file
   const rawText = await extractRawText(file);
 
-  const res = await fetch(`${config.apiBaseUrl}/api/designer/extract-requirements`, {
+  const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/designer/extract-requirements`, {
     method: 'POST',
     body: form,
   });
@@ -53,7 +60,7 @@ export async function generateOpenApi(requirement: Requirement): Promise<{ yaml:
     api_version: '1.0.0',
   };
 
-  const res = await fetch(`${config.apiBaseUrl}/api/designer/generate`, {
+  const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/designer/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

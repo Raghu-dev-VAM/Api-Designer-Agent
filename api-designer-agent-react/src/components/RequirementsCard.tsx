@@ -14,6 +14,7 @@ interface RequirementsCardProps {
   onViewRequirement: (req: Requirement) => void;
   onStatusChange: (id: string, status: 'Draft' | 'Approved' | 'Rejected') => void;
   onGenerate: () => void;
+  isGenerating: boolean;
   onFilter: () => void;
   onRefresh: () => void;
 }
@@ -34,9 +35,9 @@ const METHOD_COLORS: Record<string, { bg: string; color: string }> = {
 
 export default function RequirementsCard({
   requirements, selectedRequirement, rawText, search, tab,
-  onTabChange, onSearchChange, onSelectRequirement, onViewRequirement, onStatusChange, onGenerate, onFilter, onRefresh
+  onTabChange, onSearchChange, onSelectRequirement, onViewRequirement, onStatusChange, onGenerate, isGenerating, onFilter, onRefresh
 }: RequirementsCardProps) {
-  const canGenerate = selectedRequirement?.status === 'Approved';
+  const canGenerate = selectedRequirement?.status === 'Approved' && !isGenerating;
   const hideSearch = tab === 'Raw' || tab === 'Summary';
 
   const approved  = requirements.filter((r) => r.status === 'Approved').length;
@@ -128,7 +129,7 @@ export default function RequirementsCard({
               )}
               {requirements.map((req) => (
                 <div key={req.id} className={`req-item ${selectedRequirement?.id === req.id ? 'active' : ''}`}>
-                  <button className="req-item-body" onClick={() => onViewRequirement(req)}>
+                  <button className="req-item-body" onClick={() => onSelectRequirement(req)}>
                     <strong>{req.id}: {req.title}</strong>
                     <span>{req.desc}</span>
                     <small>
@@ -167,14 +168,16 @@ export default function RequirementsCard({
               className="primary-btn"
               onClick={onGenerate}
               disabled={!canGenerate}
-              title={canGenerate ? 'Generate OpenAPI spec' : 'Only Approved requirements can be used to generate a spec'}
+              title={canGenerate ? 'Generate OpenAPI spec' : isGenerating ? 'Generation in progress…' : 'Only Approved requirements can be used to generate a spec'}
             >
-              Generate <Icon name="arrow" size={17} />
+              {isGenerating ? 'Generating…' : 'Generate'} <Icon name="arrow" size={17} />
             </button>
             <p className="hint">
-              {canGenerate
-                ? 'Click Generate to create the OpenAPI spec'
-                : 'Approve a requirement to enable generation'}
+              {isGenerating
+                ? 'Generating OpenAPI spec, please wait…'
+                : canGenerate
+                  ? 'Click Generate to create the OpenAPI spec'
+                  : 'Approve a requirement to enable generation'}
             </p>
           </>
         )}

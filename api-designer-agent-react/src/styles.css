@@ -1747,3 +1747,29 @@ footer span::before {
   background: #ede9fe;
   border-color: #a78bfa;
 }
+
+.loader-overlay {
+  pointer-events: none !important;
+}
+
+.loader-box {
+  pointer-events: auto;
+}
+
+.loader-box-floating {
+  position: fixed;
+  bottom: 32px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 24px;
+  background: #fff;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  box-shadow: 0 8px 32px rgba(15, 23, 42, 0.14);
+  pointer-events: none;
+  white-space: nowrap;
+}
