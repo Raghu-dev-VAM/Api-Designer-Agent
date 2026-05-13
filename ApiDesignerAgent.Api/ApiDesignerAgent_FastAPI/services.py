@@ -33,10 +33,10 @@ class GroqService:
         return current_key
 
     async def generate_openapi(self, request: GenerateRequest) -> str:
-        requirements_list = "\n".join([
+        requirements_list = "\n".join(
             f"- [{req.id}] {req.title} (Priority: {req.priority}): {req.description} [Source: {req.source}]"
             for req in request.requirements
-        ])
+        )
 
         prompt = f"""You are an expert API designer. Generate a complete, valid OpenAPI 3.0.3 YAML specification based on these functional requirements:
 

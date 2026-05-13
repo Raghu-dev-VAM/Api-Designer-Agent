@@ -10,7 +10,7 @@ export const sources: Source[] = [
 export const requirements: Requirement[] = [];
 
 export const artifacts: [string, string, string, string][] = [
-  ['OpenAPI Specification (YAML/JSON)', 'Complete OpenAPI 3.0 specification', 'doc', '#ccfbf1'],
+  ['Swagger Docs', 'Interactive HTML API documentation', 'doc', '#ccfbf1'],
   ['API Endpoints Summary (Markdown)', 'Human-readable API summary', 'file', '#dbeafe'],
   ['Data Models / Schemas (JSON)', 'Request & response schemas', 'cube', '#ede9fe'],
   ['Postman Collection', 'Ready-to-use collection for testing', 'rocket', '#ffedd5'],

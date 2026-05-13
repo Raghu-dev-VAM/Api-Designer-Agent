@@ -1,35 +1,75 @@
 """
-FastAPI application for API Designer Agent.
-Generates OpenAPI specifications from functional requirements using Groq AI.
+API Designer Agent — application entry point.
+All route logic lives in routers/.
 """
 
-from fastapi import FastAPI, HTTPException, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
-from datetime import datetime, timezone
 import logging
-import io
-import json
+from datetime import datetime, timezone
 
-from models import (
-    Requirement, GenerateRequest, GenerateResponse,
-    ValidateRequest, ValidateResponse,
-    ArtifactRequest, ArtifactResponse
-)
-from services import GroqService, PythonService
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.openapi.utils import get_openapi
+from fastapi.responses import HTMLResponse
+
 from config import settings
+from routers import designer, azure, jira, confluence, excel
 
-# Configure logging
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# Initialize FastAPI app
+TAGS_METADATA = [
+    {
+        "name": "designer",
+        "description": "Generate, validate and export OpenAPI specifications from functional requirements using Groq AI.",
+    },
+    {
+        "name": "excel",
+        "description": "Upload Excel spreadsheets and extract structured user story requirements.",
+    },
+    {
+        "name": "azure",
+        "description": "Fetch user stories directly from Azure DevOps work items.",
+    },
+    {
+        "name": "jira",
+        "description": "Fetch issues and user stories from Jira projects.",
+    },
+    {
+        "name": "confluence",
+        "description": "Extract requirements from Confluence pages and spaces.",
+    },
+    {
+        "name": "health",
+        "description": "Service health check.",
+    },
+]
+
 app = FastAPI(
-    title="API Designer Agent",
-    version="1.0.0",
-    description="Generates OpenAPI specifications from functional requirements using Groq AI and Python processing."
+    title=settings.app_title,
+    version=settings.app_version,
+    description=(
+        "## API Designer Agent\n\n"
+        "An AI-powered tool that generates complete **OpenAPI 3.0.3** specifications "
+        "from functional requirements using **Groq AI** (LLaMA 70B).\n\n"
+        "### Key Features\n"
+        "- 📄 Upload Word documents or Excel spreadsheets to extract requirements\n"
+        "- 🔗 Connect to Azure DevOps, Jira, and Confluence\n"
+        "- ⚡ Generate OpenAPI YAML/JSON specs with a single API call\n"
+        "- ✅ Validate OpenAPI specifications\n"
+        "- 📦 Export Postman collections and data models\n"
+    ),
+    openapi_tags=TAGS_METADATA,
+    contact={
+        "name": "API Designer Agent",
+        "url": "https://github.com/your-org/api-designer-agent",
+    },
+    license_info={
+        "name": "MIT",
+    },
+    docs_url=None,
+    redoc_url=None,
 )
 
-# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -38,170 +78,44 @@ app.add_middleware(
     allow_headers=settings.cors_headers,
 )
 
-# Initialize services
-groq_service = GroqService(settings.groq_api_keys)
-python_service = PythonService()
+app.include_router(designer.router)
+app.include_router(azure.router)
+app.include_router(jira.router)
+app.include_router(confluence.router)
+app.include_router(excel.router)
 
 
-@app.get("/api/health")
+@app.get("/api/health", tags=["health"])
 async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "timestamp": datetime.now(timezone.utc).isoformat()
-    }
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
 
 
-@app.post("/api/designer/generate", response_model=GenerateResponse)
-async def generate_openapi(request: GenerateRequest):
-    """
-    Generate an OpenAPI specification from approved functional requirements using Groq AI.
-    Only requirements with status 'Approved' are processed.
-    """
-    if not request.requirements:
-        raise HTTPException(status_code=400, detail="At least one requirement is required.")
-
-    approved = [r for r in request.requirements if (r.status or "Draft").lower() == "approved"]
-
-    if not approved:
-        raise HTTPException(
-            status_code=422,
-            detail="No approved requirements found. Only requirements with status 'Approved' can be used to generate an OpenAPI spec."
-        )
-
-    approved_request = GenerateRequest(
-        requirements=approved,
-        api_title=request.api_title,
-        api_version=request.api_version
+@app.get("/docs", include_in_schema=False)
+async def swagger_ui() -> HTMLResponse:
+    return get_swagger_ui_html(
+        openapi_url="/openapi.json",
+        title=f"{settings.app_title} — Swagger UI",
+        swagger_ui_parameters={
+            "defaultModelsExpandDepth": 1,
+            "defaultModelExpandDepth": 2,
+            "docExpansion": "list",
+            "filter": True,
+            "tryItOutEnabled": True,
+            "displayRequestDuration": True,
+            "persistAuthorization": True,
+        },
     )
 
-    try:
-        yaml = await groq_service.generate_openapi(approved_request)
-        summary = await groq_service.generate_summary(yaml)
-        json_spec = python_service.convert_yaml_to_json(yaml)
 
-        return GenerateResponse(
-            open_api_yaml=yaml,
-            open_api_json=json_spec,
-            summary=summary,
-            generated_at=datetime.now(timezone.utc).isoformat()
-        )
-    except Exception as ex:
-        logger.error("Generate failed: %s", ex)
-        raise HTTPException(status_code=500, detail=str(ex))
-
-
-@app.post("/api/designer/validate", response_model=ValidateResponse)
-async def validate_openapi_spec(request: ValidateRequest):
-    """
-    Validate an OpenAPI YAML specification.
-    """
-    if not request.open_api_yaml or request.open_api_yaml.strip() == "":
-        raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
-
-    result = python_service.validate_openapi(request.open_api_yaml)
-    return result
-
-
-@app.post("/api/designer/artifact")
-async def get_artifact(request: ArtifactRequest):
-    """
-    Download a specific artifact derived from an OpenAPI spec (YAML, JSON, or Postman collection).
-    """
-    if not request.open_api_yaml or request.open_api_yaml.strip() == "":
-        raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
-
-    artifact_type = request.artifact_type.lower() if request.artifact_type else ""
-
-    try:
-        if artifact_type == "yaml":
-            return {
-                "content": request.open_api_yaml,
-                "file_name": "openapi.yaml",
-                "content_type": "application/x-yaml"
-            }
-        elif artifact_type == "json":
-            json_content = python_service.convert_yaml_to_json(request.open_api_yaml)
-            return {
-                "content": json_content,
-                "file_name": "openapi.json",
-                "content_type": "application/json"
-            }
-        elif artifact_type == "postman":
-            postman_content = python_service.generate_postman_collection(
-                request.open_api_yaml,
-                request.api_title or "API Collection"
-            )
-            return {
-                "content": postman_content,
-                "file_name": "postman_collection.json",
-                "content_type": "application/json"
-            }
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unknown artifact type: {request.artifact_type}. Supported: yaml, json, postman"
-            )
-    except HTTPException:
-        raise
-    except Exception as ex:
-        logger.error("Artifact generation failed: %s", ex)
-        raise HTTPException(status_code=500, detail=str(ex))
-
-
-@app.post("/api/designer/extract-requirements")
-async def extract_requirements_from_document(file: UploadFile = File(...)):
-    """
-    Upload a Word document (.docx) and extract structured business requirements using Groq AI.
-    """
-    if not file.filename or not file.filename.lower().endswith(".docx"):
-        raise HTTPException(status_code=400, detail="Only .docx files are supported.")
-
-    try:
-        import docx
-    except ImportError:
-        raise HTTPException(status_code=500, detail="python-docx is not installed on the server.")
-
-    try:
-        contents = await file.read()
-        with io.BytesIO(contents) as buf:
-            doc = docx.Document(buf)
-            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
-    except Exception as ex:
-        logger.error("Failed to read docx: %s", ex)
-        raise HTTPException(status_code=400, detail=f"Failed to read document: {ex}")
-
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="Document appears to be empty.")
-
-    prompt = f"""You are a business analyst. Extract structured functional requirements from the following document text.
-
-Return a JSON array only (no markdown, no explanation) where each item has:
-- id: string like "FR-001"
-- title: short title
-- desc: two-sentence description
-- source: "Uploaded Document"
-- priority: "High", "Medium", or "Low"
-- status: "Draft"
-- method: HTTP method (get, post, put, patch)
-- path: REST API path like /resources/{{id}}
-- summary: one-line API operation summary
-
-Document text:
-{text[:6000]}
-"""
-
-    try:
-        raw = await groq_service._call_groq(prompt)
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1]
-            cleaned = cleaned.rsplit("```", 1)[0].strip()
-        requirements = json.loads(cleaned)
-        return {"requirements": requirements, "raw_text": text}
-    except Exception as ex:
-        logger.error("Requirement extraction failed: %s", ex)
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {ex}")
+@app.get("/openapi.json", include_in_schema=False)
+async def openapi_schema():
+    return get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        tags=TAGS_METADATA,
+        routes=app.routes,
+    )
 
 
 if __name__ == "__main__":
