@@ -14,10 +14,15 @@ from fastapi.responses import HTMLResponse
 
 from config import settings
 from routers import designer, azure, jira, confluence, excel
+from routers.auth import router as auth_router
 
 logging.basicConfig(level=logging.INFO)
 
 TAGS_METADATA = [
+    {
+        "name": "auth",
+        "description": "Register, login and get current user. Returns JWT Bearer token.",
+    },
     {
         "name": "designer",
         "description": "Generate, validate and export OpenAPI specifications from functional requirements using Groq AI.",
@@ -57,6 +62,7 @@ app = FastAPI(
         "- ⚡ Generate OpenAPI YAML/JSON specs with a single API call\n"
         "- ✅ Validate OpenAPI specifications\n"
         "- 📦 Export Postman collections and data models\n"
+        "- 🔐 JWT Authentication — register, login, protect all endpoints\n"
     ),
     openapi_tags=TAGS_METADATA,
     contact={
@@ -72,12 +78,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
+    allow_origins=settings.parsed_cors_origins,
     allow_credentials=settings.cors_credentials,
-    allow_methods=settings.cors_methods,
-    allow_headers=settings.cors_headers,
+    allow_methods=settings.parsed_cors_methods,
+    allow_headers=settings.parsed_cors_headers,
 )
 
+# auth first — so Register/Login appear at top of Swagger UI
+app.include_router(auth_router)
 app.include_router(designer.router)
 app.include_router(azure.router)
 app.include_router(jira.router)
@@ -107,15 +115,26 @@ async def swagger_ui() -> HTMLResponse:
     )
 
 
+# Custom OpenAPI schema — adds JWT BearerAuth security scheme
+# .NET equivalent: c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme {...})
 @app.get("/openapi.json", include_in_schema=False)
 async def openapi_schema():
-    return get_openapi(
+    schema = get_openapi(
         title=app.title,
         version=app.version,
         description=app.description,
         tags=TAGS_METADATA,
         routes=app.routes,
     )
+    schema.setdefault("components", {})["securitySchemes"] = {
+        "BearerAuth": {
+            "type": "http",
+            "scheme": "bearer",
+            "bearerFormat": "JWT",
+            "description": "Paste the token from POST /api/auth/login",
+        }
+    }
+    return schema
 
 
 if __name__ == "__main__":

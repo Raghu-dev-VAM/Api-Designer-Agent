@@ -3,10 +3,10 @@ import logging
 import re
 from typing import Optional, List, Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from dependencies import get_groq_service
+from dependencies import get_groq_service, get_current_user
 from routers.designer import _clean_json
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,6 @@ groq_service = get_groq_service()
 
 
 def _match_key(key: str, patterns: List[str]) -> bool:
-    """Return True if the normalised key contains any of the patterns."""
     k = key.strip().lower()
     return any(p in k for p in patterns)
 
@@ -68,8 +67,7 @@ class ExcelExtractRequest(BaseModel):
 
 
 @router.post("/debug")
-async def debug_excel(request: ExcelExtractRequest):
-    """Returns what the backend actually receives — use to diagnose column mapping."""
+async def debug_excel(request: ExcelExtractRequest, _: dict = Depends(get_current_user)):
     if not request.rows:
         return {"error": "No rows received"}
     first = request.rows[0] if isinstance(request.rows[0], dict) else {}
@@ -86,7 +84,6 @@ async def debug_excel(request: ExcelExtractRequest):
 
 
 async def _groq_fallback(rows: list, filename: str) -> list:
-    """Use Groq AI to extract requirements when direct column mapping finds nothing."""
     logger.info("Direct column mapping found nothing — using Groq fallback for %d rows", len(rows))
     text = "\n".join(json.dumps(r) for r in rows[:80])
     prompt = f"""You are a business analyst. Extract structured API functional requirements from the following spreadsheet rows.
@@ -112,11 +109,10 @@ Rows:
 
 
 @router.post("/extract-requirements")
-async def extract_requirements_from_excel(request: ExcelExtractRequest):
+async def extract_requirements_from_excel(request: ExcelExtractRequest, _: dict = Depends(get_current_user)):
     if not request.rows:
         raise HTTPException(status_code=400, detail="No data rows provided.")
 
-    # Log actual column names from first row to help debug
     if request.rows and isinstance(request.rows[0], dict):
         logger.info("Excel columns received: %s", list(request.rows[0].keys()))
         logger.info("Excel first row sample: %s", dict(list(request.rows[0].items())[:5]))
@@ -129,7 +125,6 @@ async def extract_requirements_from_excel(request: ExcelExtractRequest):
 
         m = request.mapping
 
-        # Use explicit mapping if provided, otherwise fall back to pattern matching
         if m and m.userStory:
             story_id   = str(row.get(m.storyId, "")).strip()   if m.storyId   else ""
             epic       = str(row.get(m.epic, "")).strip()       if m.epic       else ""
@@ -170,7 +165,6 @@ async def extract_requirements_from_excel(request: ExcelExtractRequest):
             "acceptanceCriteria": [c.strip() for c in re.split(r"[;\n]+", criteria) if c.strip()] if criteria else [],
         })
 
-    # Groq fallback — if direct mapping found nothing, send raw rows to AI
     if not requirements:
         try:
             requirements = await _groq_fallback(request.rows, request.filename or "spreadsheet")

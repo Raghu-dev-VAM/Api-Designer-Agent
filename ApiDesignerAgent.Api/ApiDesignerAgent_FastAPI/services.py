@@ -19,15 +19,16 @@ class GroqService:
     """Service for interacting with Groq API for AI-powered OpenAPI generation."""
 
     def __init__(self, api_keys: List[str], model: str = "llama-3.3-70b-versatile", base_url: str = "https://api.groq.com/openai/v1/chat/completions"):
-        if not api_keys:
-            raise ValueError("At least one API key must be provided")
-        self._key_cycle = cycle(api_keys)
+        self._key_cycle = cycle(api_keys) if api_keys else None
+        self._has_keys = bool(api_keys)
         self.model = model
         self.base_url = base_url
         self.client = httpx.AsyncClient(timeout=120.0)
 
     @property
     def api_key(self) -> str:
+        if not self._has_keys or self._key_cycle is None:
+            raise RuntimeError("Groq API key not configured. Set GROQ_API_KEY in .env")
         current_key = next(self._key_cycle)
         logger.debug("Using Groq API key: %s", current_key[:8] + "..." if current_key else "None")
         return current_key
