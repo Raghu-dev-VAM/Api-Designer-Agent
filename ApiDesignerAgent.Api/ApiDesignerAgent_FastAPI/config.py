@@ -37,10 +37,6 @@ class Settings(BaseSettings):
     cors_methods: str = "*"
     cors_headers: str = "*"
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-
     @property
     def groq_api_keys(self) -> list:
         raw = self.groq_api_key.strip()
@@ -106,11 +102,29 @@ class Settings(BaseSettings):
         origins = [o.strip() for o in self.cors_origins.split(",") if o.strip()]
         return origins if origins else ["*"]
 
+    @property
+    def parsed_cors_methods(self) -> list:
+        if isinstance(self.cors_methods, list):
+            return self.cors_methods
+        methods = [m.strip() for m in self.cors_methods.split(",") if m.strip()]
+        return methods if methods else ["*"]
+
+    @property
+    def parsed_cors_headers(self) -> list:
+        if isinstance(self.cors_headers, list):
+            return self.cors_headers
+        headers = [h.strip() for h in self.cors_headers.split(",") if h.strip()]
+        return headers if headers else ["*"]
+
     cors_credentials: bool = True
     cors_methods: list = ["*"]
     cors_headers: list = ["*"]
 
-    model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8")
+    model_config = ConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
 
 
 # Create global settings instance
