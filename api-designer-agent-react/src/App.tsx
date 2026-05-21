@@ -5,9 +5,11 @@ import RequirementsCard from './components/RequirementsCard';
 import PreviewCard from './components/PreviewCard';
 import ArtifactsCard from './components/ArtifactsCard';
 import ActionsCard from './components/ActionsCard';
+import CodeGenPanel from './components/CodeGenPanel';
 import UserStoryReviewPanel from './components/UserStoryReviewPanel';
 import Loader from './components/Loader';
 import { sources } from './data';
+import { config } from './config';
 import { extractRequirementsFromDocx, generateOpenApi, generatePostmanCollection, generateDataModels, generateSwaggerDocs, fetchAzureStories, fetchJiraStories, fetchConfluenceStories, readExcelColumns, extractRequirementsFromExcel } from './services/documentService';
 import type { AzureConfig, JiraConfig, ConfluenceConfig, ExcelColumnMapping } from './services/documentService';
 import ExcelColumnMapModal from './components/ExcelColumnMapModal';
@@ -339,6 +341,17 @@ export default function App() {
             isGenerating={isGenerating}
             onPreview={() => setToast('Preview rendered in YAML mode')}
             onDownload={() => downloadFile('openapi.yaml', generatedSpec, 'application/yaml')}
+            onDownloadJson={async () => {
+              try {
+                const res = await fetch(`${config.apiBaseUrl}/api/designer/artifact`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ open_api_yaml: generatedSpec, artifact_type: 'json' }),
+                });
+                const data = await res.json();
+                downloadFile('openapi.json', data.content, 'application/json');
+              } catch { setToast('Failed to convert to JSON'); }
+            }}
           />
         </div>
 
@@ -362,9 +375,14 @@ export default function App() {
         />
       </section>
 
-      <section className="bottom-grid">
+      {/* <section className="bottom-grid">
         <ActionsCard onAction={runAction} />
-      </section>
+      </section> */}
+
+      <CodeGenPanel
+        openApiYaml={generatedSpec}
+        projectName={selectedRequirement?.title?.replace(/\s+/g, '') ?? 'GeneratedApi'}
+      />
 
 
       <UserStoryReviewPanel

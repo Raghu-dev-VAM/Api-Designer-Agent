@@ -264,6 +264,84 @@ export async function generateDataModels(openApiYaml: string): Promise<string> {
   return data.content;
 }
 
+export interface CodeGenStatus {
+  event: 'status' | 'agent_message' | 'done' | 'error' | 'incremental_ready';
+  agent?: string;
+  message?: string;
+  preview?: string;
+  step?: number;
+  total?: number;
+  percent?: number;
+  project_name?: string;
+  file_count?: number;
+  src_count?: number;
+  test_count?: number;
+  file_list?: string[];
+  src_files?: string[];
+  test_files?: string[];
+  zip_base64?: string;
+  pre_review_available?: boolean;
+  download_urls?: {
+    pre_review: string;
+    final: string;
+    latest: string;
+  };
+  download_url?: string; // For incremental_ready events
+}
+
+export function startCodeGen(
+  openApiYaml: string,
+  projectName: string,
+  llmProvider: 'groq' | 'openai',
+  onStatus: (s: CodeGenStatus) => void,
+): () => void {
+  let es: EventSource | null = null;
+  let cancelled = false;
+
+  fetchWithTimeout(`${config.apiBaseUrl}/api/codegen/generate-dotnet`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      open_api_yaml: openApiYaml,
+      project_name: projectName,
+      llm_provider: llmProvider,
+    }),
+  }).then(async (res) => {
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Failed to start code generation' }));
+      onStatus({ event: 'error', message: typeof err.detail === 'string' ? err.detail : 'Failed to start' });
+      return;
+    }
+    const data = await res.json();
+    if (cancelled) return;
+
+    es = new EventSource(`${config.apiBaseUrl}${data.stream_url}`);
+
+    es.addEventListener('status', (e) => {
+      onStatus({ event: 'status', ...JSON.parse(e.data) });
+    });
+    es.addEventListener('agent_message', (e) => {
+      onStatus({ event: 'agent_message', ...JSON.parse(e.data) });
+    });
+    es.addEventListener('incremental_ready', (e) => {
+      onStatus({ event: 'incremental_ready', ...JSON.parse(e.data) });
+    });
+    es.addEventListener('done', (e) => {
+      onStatus({ event: 'done', ...JSON.parse(e.data) });
+      es?.close();
+    });
+    es.addEventListener('error', (e) => {
+      const data = (e as MessageEvent).data;
+      onStatus({ event: 'error', message: data ? JSON.parse(data).message : 'Stream error' });
+      es?.close();
+    });
+  }).catch((err) => {
+    onStatus({ event: 'error', message: err.message });
+  });
+
+  return () => { cancelled = true; es?.close(); };
+}
+
 export async function generateSwaggerDocs(openApiYaml: string): Promise<string> {
   const body = { open_api_yaml: openApiYaml, artifact_type: 'swagger' };
 

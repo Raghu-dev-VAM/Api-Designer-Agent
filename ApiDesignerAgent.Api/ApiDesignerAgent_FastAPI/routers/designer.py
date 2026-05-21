@@ -34,11 +34,12 @@ async def generate_openapi(request: GenerateRequest):
         api_version=request.api_version,
     )
     try:
-        yaml = await groq_service.generate_openapi(approved_request)
-        summary = await groq_service.generate_summary(yaml)
-        json_spec = python_service.convert_yaml_to_json(yaml)
+        yaml_raw = await groq_service.generate_openapi(approved_request)
+        yaml_clean = _clean_yaml(yaml_raw)
+        summary = await groq_service.generate_summary(yaml_clean)
+        json_spec = python_service.convert_yaml_to_json(yaml_clean)
         return GenerateResponse(
-            open_api_yaml=yaml,
+            open_api_yaml=yaml_clean,
             open_api_json=json_spec,
             summary=summary,
             generated_at=datetime.now(timezone.utc).isoformat(),
@@ -65,7 +66,7 @@ async def get_artifact(request: ArtifactRequest):
         if artifact_type == "yaml":
             return {"content": request.open_api_yaml, "file_name": "openapi.yaml", "content_type": "application/x-yaml"}
         elif artifact_type == "json":
-            return {"content": python_service.convert_yaml_to_json(request.open_api_yaml), "file_name": "openapi.json", "content_type": "application/json"}
+            return {"content": python_service.convert_yaml_to_json(_clean_yaml(request.open_api_yaml)), "file_name": "openapi.json", "content_type": "application/json"}
         elif artifact_type == "postman":
             return {"content": python_service.generate_postman_collection(request.open_api_yaml, request.api_title or "API Collection"), "file_name": "postman_collection.json", "content_type": "application/json"}
         else:
@@ -130,13 +131,21 @@ def _clean_json(raw: str) -> str:
     return cleaned
 
 
+def _clean_yaml(raw: str) -> str:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1]
+        cleaned = cleaned.rsplit("```", 1)[0].strip()
+    return cleaned
+
+
 @router.post("/swagger-docs")
 async def generate_swagger_docs(request: ArtifactRequest):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
     try:
         import yaml as pyyaml
-        doc = pyyaml.safe_load(request.open_api_yaml)
+        doc = pyyaml.safe_load(_clean_yaml(request.open_api_yaml))
         openapi_json = json.dumps(doc)
         title = doc.get("info", {}).get("title", "API Documentation")
         

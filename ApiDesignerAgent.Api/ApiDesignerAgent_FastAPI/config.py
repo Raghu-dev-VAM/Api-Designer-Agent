@@ -4,6 +4,7 @@ Reads settings from environment variables or .env file.
 """
 
 from pydantic_settings import BaseSettings
+from pydantic import ConfigDict
 import os
 
 
@@ -18,9 +19,50 @@ class Settings(BaseSettings):
     @property
     def groq_api_keys(self) -> list:
         raw = self.groq_api_key.strip()
+        if not raw:
+            return []
         if raw.startswith("[") and raw.endswith("]"):
             raw = raw[1:-1]
         return [k.strip() for k in raw.split(",") if k.strip()]
+
+    # OpenAI API Configuration (future switch)
+    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
+    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-4o")
+    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
+
+    # LLM Provider: "groq" or "openai"
+    llm_provider: str = os.getenv("LLM_PROVIDER", "groq")
+
+    @property
+    def active_llm_config(self) -> dict:
+        """Returns AutoGen-compatible LLM config for active provider."""
+        if self.llm_provider == "openai":
+            return {
+                "config_list": [{
+                    "model": self.openai_model,
+                    "api_key": self.openai_api_key,
+                    "base_url": self.openai_base_url,
+                    "api_type": "openai",
+                }],
+                "temperature": 0.2,
+                "max_tokens": 4096,
+            }
+        # Default: Groq
+        keys = self.groq_api_keys
+        return {
+            "config_list": [{
+                "model": self.groq_model,
+                "api_key": key,
+                "base_url": "https://api.groq.com/openai/v1",
+                "api_type": "openai",
+            } for key in keys],
+            "temperature": 0.2,
+            "max_tokens": 4096,
+        }
+
+    # Ollama local fallback (optional — fully offline)
+    ollama_base_url: str = os.getenv("OLLAMA_BASE_URL", "")
+    ollama_model: str = os.getenv("OLLAMA_MODEL", "llama3.2")
 
     # Application Configuration
     app_title: str = "API Designer Agent"
@@ -43,9 +85,7 @@ class Settings(BaseSettings):
     cors_methods: list = ["*"]
     cors_headers: list = ["*"]
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
+    model_config = ConfigDict(env_file=".env", env_file_encoding="utf-8")
 
 
 # Create global settings instance

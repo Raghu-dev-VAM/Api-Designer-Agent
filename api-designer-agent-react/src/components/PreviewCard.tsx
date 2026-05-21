@@ -9,9 +9,10 @@ interface PreviewCardProps {
   isGenerating: boolean;
   onPreview: () => void;
   onDownload: () => void;
+  onDownloadJson: () => void;
 }
 
-export default function PreviewCard({ spec, toast, lastGeneratedAt, isGenerating, onPreview, onDownload }: PreviewCardProps) {
+export default function PreviewCard({ spec, toast, lastGeneratedAt, isGenerating, onPreview, onDownload, onDownloadJson }: PreviewCardProps) {
   const [showModal, setShowModal] = useState(false);
 
   const handlePreview = () => {
@@ -27,7 +28,8 @@ export default function PreviewCard({ spec, toast, lastGeneratedAt, isGenerating
           <div className="file-toolbar">
             <button className="active">openapi.yaml</button>
             <button onClick={handlePreview} disabled={!spec || isGenerating}><Icon name="eye" size={15} />Preview</button>
-            <button onClick={onDownload} disabled={!spec || isGenerating}><Icon name="download" size={15} />Download</button>
+            <button onClick={onDownload} disabled={!spec || isGenerating}><Icon name="download" size={15} />YAML</button>
+            <button onClick={onDownloadJson} disabled={!spec || isGenerating}><Icon name="download" size={15} />JSON</button>
           </div>
 
           {isGenerating ? (
@@ -67,7 +69,8 @@ export default function PreviewCard({ spec, toast, lastGeneratedAt, isGenerating
             <div className="preview-modal-header">
               <span className="preview-modal-title"><Icon name="doc" size={16} />openapi.yaml</span>
               <div className="preview-modal-actions">
-                <button onClick={onDownload}><Icon name="download" size={15} />Download</button>
+                <button onClick={onDownload}><Icon name="download" size={15} />YAML</button>
+                <button onClick={onDownloadJson}><Icon name="download" size={15} />JSON</button>
                 <button className="preview-modal-close" onClick={() => setShowModal(false)} aria-label="Close">
                   <Icon name="plus" size={16} />
                 </button>
