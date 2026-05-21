@@ -705,6 +705,7 @@ OpenAPI context:
             
             # Build the using statement separately to avoid backslash in f-string
             required_usings = f"using Microsoft.EntityFrameworkCore; using Microsoft.EntityFrameworkCore.Metadata.Builders; using {project_name}.Data.Entities;"
+            config_prompts_joined = "\n".join(config_prompts)
             
             db_text = await _llm(
                 client,
@@ -728,7 +729,7 @@ Full implementations. No TODOs.""",
    OnModelCreating applies configuration classes with modelBuilder.ApplyConfiguration(new {entities[0]}Configuration())
    SaveChangesAsync override sets CreatedAt/UpdatedAt automatically
    DO NOT use BaseEntity or any base class
-{'\n'.join(config_prompts)}
+{config_prompts_joined}
    Each configuration must include required usings: {required_usings}""",
                 step_label="Coder", keys=keys, model=model, q=q, step=5,
             )
