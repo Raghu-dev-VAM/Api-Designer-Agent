@@ -695,11 +695,16 @@ OpenAPI context:
             # Generate configurations for available entities (up to 3)
             config_prompts = []
             for idx, entity in enumerate(entities[:3], 1):
+                # Build the configuration prompt without backslashes in f-string
+                using_stmt = f"using Microsoft.EntityFrameworkCore; using Microsoft.EntityFrameworkCore.Metadata.Builders; using {project_name}.Data.Entities;"
                 config_prompts.append(
                     f"{idx+1}. {project_name}.Data/Configurations/{entity}Configuration.cs — namespace {project_name}.Data.Configurations\n"
                     f"   class {entity}Configuration : IEntityTypeConfiguration<{entity}>\n"
                     f"   include table mapping, primary key, indexes, and constraints"
                 )
+            
+            # Build the using statement separately to avoid backslash in f-string
+            required_usings = f"using Microsoft.EntityFrameworkCore; using Microsoft.EntityFrameworkCore.Metadata.Builders; using {project_name}.Data.Entities;"
             
             db_text = await _llm(
                 client,
@@ -724,7 +729,7 @@ Full implementations. No TODOs.""",
    SaveChangesAsync override sets CreatedAt/UpdatedAt automatically
    DO NOT use BaseEntity or any base class
 {'\n'.join(config_prompts)}
-   Each configuration must include required usings: using Microsoft.EntityFrameworkCore; using Microsoft.EntityFrameworkCore.Metadata.Builders; using {project_name}.Data.Entities;""",
+   Each configuration must include required usings: {required_usings}""",
                 step_label="Coder", keys=keys, model=model, q=q, step=5,
             )
             all_files.update(_extract_files(db_text))
