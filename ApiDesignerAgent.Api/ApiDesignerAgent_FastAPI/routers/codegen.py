@@ -1107,12 +1107,8 @@ Full implementations using WebApplicationFactory. No TODOs.""",
                 "src_files":    src_files,
                 "test_files":   test_files,
                 "zip_base64":   zip_b64,
+                "pre_review_zip_base64": pre_review_b64,
                 "pre_review_available": True,
-                "download_urls": {
-                    "pre_review": f"/api/codegen/download/{job_id}/pre-review",
-                    "final": f"/api/codegen/download/{job_id}/final",
-                    "latest": f"/api/codegen/download/{job_id}/latest",
-                },
             }))
 
     except Exception as ex:

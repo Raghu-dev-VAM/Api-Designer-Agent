@@ -1,11 +1,11 @@
 import type { Requirement } from '../types';
 import { config } from '../config';
-import { authHeaders } from './authService';
+import { authHeaders, logout } from './authService';
 
 const TIMEOUT_MS = 120_000;
 
 // Merges auth Bearer token into every request — same as HttpClient default headers in .NET
-function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms = TIMEOUT_MS): Promise<Response> {
+async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms = TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
   const merged: RequestInit = {
@@ -13,7 +13,12 @@ function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms = TIMEO
     headers: { ...authHeaders(), ...(init.headers as Record<string, string> ?? {}) },
     signal: controller.signal,
   };
-  return fetch(input, merged).finally(() => clearTimeout(timer));
+  const res = await fetch(input, merged).finally(() => clearTimeout(timer));
+  if (res.status === 401) {
+    logout();
+    window.location.reload();
+  }
+  return res;
 }
 
 export async function extractRequirementsFromDocx(file: File): Promise<{ requirements: Requirement[]; rawText: string }> {
@@ -287,13 +292,9 @@ export interface CodeGenStatus {
   src_files?: string[];
   test_files?: string[];
   zip_base64?: string;
+  pre_review_zip_base64?: string;
   pre_review_available?: boolean;
-  download_urls?: {
-    pre_review: string;
-    final: string;
-    latest: string;
-  };
-  download_url?: string; // For incremental_ready events
+  download_url?: string;
 }
 
 export function startCodeGen(

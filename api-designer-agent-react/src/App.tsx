@@ -15,7 +15,7 @@ import { config } from './config';
 import { extractRequirementsFromDocx, generateOpenApi, generatePostmanCollection, generateDataModels, generateSwaggerDocs, fetchAzureStories, fetchJiraStories, fetchConfluenceStories, readExcelColumns, extractRequirementsFromExcel } from './services/documentService';import type { AzureConfig, JiraConfig, ConfluenceConfig, ExcelColumnMapping } from './services/documentService';
 import ExcelColumnMapModal from './components/ExcelColumnMapModal';
 import type { ActivityItem, Requirement } from './types';
-import { isAuthenticated, getUser, logout } from './services/authService';
+import { isAuthenticated, getUser, logout, authHeaders } from './services/authService';
 import UserMenu from './components/UserMenu';
 
 export default function App() {
@@ -366,9 +366,10 @@ export default function App() {
               try {
                 const res = await fetch(`${config.apiBaseUrl}/api/designer/artifact`, {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json' },
+                  headers: { 'Content-Type': 'application/json', ...authHeaders() },
                   body: JSON.stringify({ open_api_yaml: generatedSpec, artifact_type: 'json' }),
                 });
+                if (res.status === 401) { logout(); window.location.reload(); return; }
                 const data = await res.json();
                 downloadFile('openapi.json', data.content, 'application/json');
               } catch { setToast('Failed to convert to JSON'); }
