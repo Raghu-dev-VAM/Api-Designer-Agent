@@ -4,10 +4,10 @@ import logging
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from dependencies import get_groq_service
+from dependencies import get_groq_service, get_current_user
 from routers.designer import _clean_json
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class AzureFetchRequest(BaseModel):
 
 
 @router.post("/fetch-stories")
-async def fetch_azure_stories(request: AzureFetchRequest):
+async def fetch_azure_stories(request: AzureFetchRequest, _: dict = Depends(get_current_user)):
     token = base64.b64encode(f":{request.pat}".encode()).decode()
     headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
     base = f"https://dev.azure.com/{request.organization}/{request.project}/_apis"
@@ -36,8 +36,10 @@ async def fetch_azure_stories(request: AzureFetchRequest):
     }
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
             wiql_res = await client.post(f"{base}/wit/wiql?api-version=7.0&$top={request.max_items}", json=wiql, headers=headers)
+            if wiql_res.status_code in (301, 302, 303, 307, 308):
+                raise HTTPException(status_code=401, detail="Invalid Azure DevOps PAT or insufficient permissions.")
             if wiql_res.status_code == 401:
                 raise HTTPException(status_code=401, detail="Invalid Azure DevOps PAT or insufficient permissions.")
             if wiql_res.status_code == 404:

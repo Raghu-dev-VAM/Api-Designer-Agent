@@ -3,14 +3,14 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 
 from models import (
     GenerateRequest, GenerateResponse,
     ValidateRequest, ValidateResponse,
     ArtifactRequest,
 )
-from dependencies import get_groq_service, get_python_service
+from dependencies import get_groq_service, get_python_service, get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/designer", tags=["designer"])
@@ -20,7 +20,7 @@ python_service = get_python_service()
 
 
 @router.post("/generate", response_model=GenerateResponse)
-async def generate_openapi(request: GenerateRequest):
+async def generate_openapi(request: GenerateRequest, _: dict = Depends(get_current_user)):
     if not request.requirements:
         raise HTTPException(status_code=400, detail="At least one requirement is required.")
 
@@ -50,14 +50,14 @@ async def generate_openapi(request: GenerateRequest):
 
 
 @router.post("/validate", response_model=ValidateResponse)
-async def validate_openapi_spec(request: ValidateRequest):
+async def validate_openapi_spec(request: ValidateRequest, _: dict = Depends(get_current_user)):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
     return python_service.validate_openapi(request.open_api_yaml)
 
 
 @router.post("/artifact")
-async def get_artifact(request: ArtifactRequest):
+async def get_artifact(request: ArtifactRequest, _: dict = Depends(get_current_user)):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
 
@@ -79,7 +79,7 @@ async def get_artifact(request: ArtifactRequest):
 
 
 @router.post("/extract-requirements")
-async def extract_requirements_from_document(file: UploadFile = File(...)):
+async def extract_requirements_from_document(file: UploadFile = File(...), _: dict = Depends(get_current_user)):
     if not file.filename or not file.filename.lower().endswith(".docx"):
         raise HTTPException(status_code=400, detail="Only .docx files are supported.")
     try:
@@ -140,7 +140,7 @@ def _clean_yaml(raw: str) -> str:
 
 
 @router.post("/swagger-docs")
-async def generate_swagger_docs(request: ArtifactRequest):
+async def generate_swagger_docs(request: ArtifactRequest, _: dict = Depends(get_current_user)):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
     try:
@@ -148,7 +148,7 @@ async def generate_swagger_docs(request: ArtifactRequest):
         doc = pyyaml.safe_load(_clean_yaml(request.open_api_yaml))
         openapi_json = json.dumps(doc)
         title = doc.get("info", {}).get("title", "API Documentation")
-        
+
         html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -162,31 +162,8 @@ async def generate_swagger_docs(request: ArtifactRequest):
     .swagger-ui .topbar {{ background: linear-gradient(90deg, #4f46e5, #6d28d9); border-bottom: 2px solid #3730a3; }}
     .swagger-ui .topbar .download-url-wrapper {{ display: none; }}
     .swagger-ui .info .title {{ color: #0f172a; font-size: 32px; }}
-    .swagger-ui .scheme-container {{ background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; padding: 16px; }}
-    .swagger-ui .opblock {{ border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 12px; box-shadow: 0 1px 3px rgba(0,0,0,0.05); overflow: hidden; }}
-    .swagger-ui .opblock.opblock-get {{ background: #ecfdf5; border-color: #a7f3d0; }}
-    .swagger-ui .opblock.opblock-get .opblock-summary-method {{ background: #059669; }}
-    .swagger-ui .opblock.opblock-post {{ background: #eff6ff; border-color: #bfdbfe; }}
-    .swagger-ui .opblock.opblock-post .opblock-summary-method {{ background: #2563eb; }}
-    .swagger-ui .opblock.opblock-put {{ background: #fef3c7; border-color: #fde68a; }}
-    .swagger-ui .opblock.opblock-put .opblock-summary-method {{ background: #d97706; }}
-    .swagger-ui .opblock.opblock-delete {{ background: #fee2e2; border-color: #fecaca; }}
-    .swagger-ui .opblock.opblock-delete .opblock-summary-method {{ background: #dc2626; }}
-    .swagger-ui .opblock.opblock-patch {{ background: #f5f3ff; border-color: #c4b5fd; }}
-    .swagger-ui .opblock.opblock-patch .opblock-summary-method {{ background: #7c3aed; }}
-    .swagger-ui .opblock-summary-method {{ font-weight: 700; border-radius: 6px; min-width: 80px; text-align: center; }}
-    .swagger-ui .opblock-summary {{ display: flex; align-items: center; gap: 8px; flex-wrap: nowrap; overflow: hidden; }}
-    .swagger-ui .opblock-summary-path {{ flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-    .swagger-ui .opblock-summary-description {{ flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
-    .swagger-ui .btn {{ box-sizing: border-box; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }}
+    .swagger-ui .opblock {{ border: 1px solid #e2e8f0; border-radius: 8px; margin-bottom: 12px; }}
     .swagger-ui .btn.execute {{ background: #4f46e5; color: #fff; border: none; font-weight: 600; padding: 8px 20px; border-radius: 6px; }}
-    .swagger-ui .btn.execute:hover {{ background: #4338ca; }}
-    .swagger-ui .btn-group {{ display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }}
-    .swagger-ui .execute-wrapper {{ padding: 12px 16px; overflow: hidden; }}
-    .swagger-ui .response-col_status {{ color: #059669; font-weight: 700; }}
-    .swagger-ui table {{ width: 100%; table-layout: fixed; }}
-    .swagger-ui table thead tr th {{ background: #f1f5f9; color: #0f172a; font-weight: 700; }}
-    .swagger-ui .wrapper {{ max-width: 100%; overflow-x: hidden; }}
   </style>
 </head>
 <body>
@@ -198,17 +175,9 @@ async def generate_swagger_docs(request: ArtifactRequest):
       SwaggerUIBundle({{
         spec: {openapi_json},
         dom_id: '#swagger-ui',
-        presets: [
-          SwaggerUIBundle.presets.apis,
-          SwaggerUIStandalonePreset
-        ],
+        presets: [SwaggerUIBundle.presets.apis, SwaggerUIStandalonePreset],
         layout: 'BaseLayout',
         deepLinking: true,
-        defaultModelsExpandDepth: 1,
-        defaultModelExpandDepth: 2,
-        docExpansion: 'list',
-        filter: true,
-        displayRequestDuration: true,
         tryItOutEnabled: true,
         persistAuthorization: true,
       }});
@@ -223,7 +192,7 @@ async def generate_swagger_docs(request: ArtifactRequest):
 
 
 @router.post("/data-models")
-async def generate_data_models(request: ArtifactRequest):
+async def generate_data_models(request: ArtifactRequest, _: dict = Depends(get_current_user)):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
 

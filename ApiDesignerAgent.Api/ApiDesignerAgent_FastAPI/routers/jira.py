@@ -4,10 +4,10 @@ import logging
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from dependencies import get_groq_service
+from dependencies import get_groq_service, get_current_user
 from routers.designer import _clean_json
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def _extract_adf_text(desc) -> str:
 
 
 @router.post("/fetch-stories")
-async def fetch_jira_stories(request: JiraFetchRequest):
+async def fetch_jira_stories(request: JiraFetchRequest, _: dict = Depends(get_current_user)):
     host = request.host.rstrip("/")
     if not host.startswith("https://"):
         raise HTTPException(status_code=400, detail="Jira host must use HTTPS (start with https://).")
@@ -53,8 +53,10 @@ async def fetch_jira_stories(request: JiraFetchRequest):
     params = {"jql": jql, "maxResults": request.max_items, "fields": "summary,description,priority,status,issuetype"}
 
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=False) as client:
             res = await client.get(f"{host}/rest/api/3/search", params=params, headers=headers)
+            if res.status_code in (301, 302, 303, 307, 308):
+                raise HTTPException(status_code=401, detail="Invalid Jira credentials or insufficient permissions.")
             if res.status_code == 401:
                 raise HTTPException(status_code=401, detail="Invalid Jira credentials or insufficient permissions.")
             if res.status_code == 400:

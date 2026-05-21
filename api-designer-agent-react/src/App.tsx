@@ -8,14 +8,23 @@ import ActionsCard from './components/ActionsCard';
 import CodeGenPanel from './components/CodeGenPanel';
 import UserStoryReviewPanel from './components/UserStoryReviewPanel';
 import Loader from './components/Loader';
+import AuthPage from './components/AuthPage';
+import EditProfilePage from './components/EditProfilePage';
 import { sources } from './data';
 import { config } from './config';
-import { extractRequirementsFromDocx, generateOpenApi, generatePostmanCollection, generateDataModels, generateSwaggerDocs, fetchAzureStories, fetchJiraStories, fetchConfluenceStories, readExcelColumns, extractRequirementsFromExcel } from './services/documentService';
-import type { AzureConfig, JiraConfig, ConfluenceConfig, ExcelColumnMapping } from './services/documentService';
+import { extractRequirementsFromDocx, generateOpenApi, generatePostmanCollection, generateDataModels, generateSwaggerDocs, fetchAzureStories, fetchJiraStories, fetchConfluenceStories, readExcelColumns, extractRequirementsFromExcel } from './services/documentService';import type { AzureConfig, JiraConfig, ConfluenceConfig, ExcelColumnMapping } from './services/documentService';
 import ExcelColumnMapModal from './components/ExcelColumnMapModal';
 import type { ActivityItem, Requirement } from './types';
+import { isAuthenticated, getUser, logout } from './services/authService';
+import UserMenu from './components/UserMenu';
 
 export default function App() {
+  // ── Auth state — MUST be first, before any early return ───────────────────
+  const [authed, setAuthed] = useState(isAuthenticated());
+  const [showEditProfile, setShowEditProfile] = useState(false);
+  const [showResetPassword, setShowResetPassword] = useState(false);
+
+  // ── All other hooks — declared unconditionally (Rules of Hooks) ───────────
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>(sources.map((s) => s.id));
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [reviewingStory, setReviewingStory] = useState<Requirement | null>(null);
@@ -43,13 +52,18 @@ export default function App() {
   const [rawText, setRawText] = useState('');
   const previewRef = useRef<HTMLDivElement>(null);
 
+  // ── Auth gate — after ALL hooks ───────────────────────────────────────────
+  if (!authed) {
+    return <AuthPage onAuthenticated={() => setAuthed(true)} />;
+  }
+
+  const user = getUser();
+  const handleLogout = () => { logout(); setAuthed(false); };
+
   const connectingSource = connectingAzure ? 'azure' : connectingJira ? 'jira' : connectingConfluence ? 'confluence' : null;
 
-  const visibleRequirements = useMemo(
-    () => requirements.filter((req) =>
-      `${req.id} ${req.title} ${req.desc}`.toLowerCase().includes(search.toLowerCase())
-    ),
-    [requirements, search]
+  const visibleRequirements = requirements.filter((req) =>
+    `${req.id} ${req.title} ${req.desc}`.toLowerCase().includes(search.toLowerCase())
   );
 
   const mergeRequirements = useCallback((fetched: Requirement[]) => {
@@ -59,14 +73,13 @@ export default function App() {
     });
   }, []);
 
-  // ── Status toggle handler ───────────────────────────────────────────────────
+  // ── Status toggle handler ─────────────────────────────────────────────────
   const handleStatusChange = useCallback((id: string, status: 'Draft' | 'Approved' | 'Rejected') => {
     setRequirements((cur) => cur.map((r) => r.id === id ? { ...r, status } : r));
     setSelectedRequirement((cur) => cur?.id === id ? { ...cur, status } : cur);
     setToast(`Requirement ${id} marked as ${status}`);
   }, []);
 
-  // ── Status change from RequirementsCard (includes auto-select on approve) ───
   const handleRequirementStatusChange = useCallback((id: string, status: 'Draft' | 'Approved' | 'Rejected') => {
     handleStatusChange(id, status);
     if (status === 'Approved') {
@@ -80,7 +93,7 @@ export default function App() {
     }
   }, [handleStatusChange]);
 
-  // ── Azure DevOps handler ───────────────────────────────────────────────────
+  // ── Azure DevOps handler ──────────────────────────────────────────────────
   const handleConnectAzure = async (cfg: AzureConfig) => {
     setConnectingAzure(true);
     setToast('Fetching user stories from Azure DevOps…');
@@ -95,7 +108,7 @@ export default function App() {
     } finally { setConnectingAzure(false); }
   };
 
-  // ── Jira handler ───────────────────────────────────────────────────────────
+  // ── Jira handler ──────────────────────────────────────────────────────────
   const handleConnectJira = async (cfg: JiraConfig) => {
     setConnectingJira(true);
     setToast('Fetching issues from Jira…');
@@ -110,7 +123,7 @@ export default function App() {
     } finally { setConnectingJira(false); }
   };
 
-  // ── Confluence handler ─────────────────────────────────────────────────────
+  // ── Confluence handler ────────────────────────────────────────────────────
   const handleConnectConfluence = async (cfg: ConfluenceConfig) => {
     setConnectingConfluence(true);
     setToast('Fetching pages from Confluence…');
@@ -125,7 +138,7 @@ export default function App() {
     } finally { setConnectingConfluence(false); }
   };
 
-  // ── Excel handler ──────────────────────────────────────────────────────────
+  // ── Excel handler ─────────────────────────────────────────────────────────
   const handleUploadExcel = async (file: File) => {
     setToast(`Reading columns from ${file.name}…`);
     try {
@@ -153,7 +166,7 @@ export default function App() {
     } finally { setUploadingExcel(false); }
   };
 
-  // ── Upload handler ─────────────────────────────────────────────────────────
+  // ── Upload handler ────────────────────────────────────────────────────────
   const handleUploadDocx = async (file: File) => {
     setUploading(true);
     setToast('Extracting requirements from document…');
@@ -168,7 +181,7 @@ export default function App() {
     } finally { setUploading(false); }
   };
 
-  // ── Review panel confirm ───────────────────────────────────────────────────
+  // ── Review panel confirm ──────────────────────────────────────────────────
   const handleConfirm = (story: Requirement) => {
     const approved: Requirement = { ...story, status: 'Approved' };
     setRequirements((cur) => cur.map((r) => r.id === approved.id ? approved : r));
@@ -179,7 +192,7 @@ export default function App() {
     setActivity((cur) => [{ label: 'Approved', value: `${approved.id}: ${approved.title}` }, ...cur.slice(0, 2)]);
   };
 
-  // ── Generate OpenAPI via backend ───────────────────────────────────────────
+  // ── Generate OpenAPI ──────────────────────────────────────────────────────
   const handleGenerate = async () => {
     if (!selectedRequirement || selectedRequirement.status !== 'Approved') {
       setToast('No approved requirement selected. Approve a requirement first.');
@@ -206,7 +219,7 @@ export default function App() {
     } finally { setIsGenerating(false); }
   };
 
-  // ── Generate Postman Collection ────────────────────────────────────────────
+  // ── Generate Postman Collection ───────────────────────────────────────────
   const handleGeneratePostman = async () => {
     if (!generatedSpec || !selectedRequirement) return;
     setIsGeneratingPostman(true);
@@ -221,7 +234,7 @@ export default function App() {
     } finally { setIsGeneratingPostman(false); }
   };
 
-  // ── Generate Swagger Docs ──────────────────────────────────────────────────
+  // ── Generate Swagger Docs ─────────────────────────────────────────────────
   const handleGenerateSwagger = async () => {
     if (!generatedSpec || !selectedRequirement) return;
     setIsGeneratingSwagger(true);
@@ -236,7 +249,7 @@ export default function App() {
     } finally { setIsGeneratingSwagger(false); }
   };
 
-  // ── Generate Data Models ───────────────────────────────────────────────────
+  // ── Generate Data Models ──────────────────────────────────────────────────
   const handleGenerateDataModels = async () => {
     if (!generatedSpec || !selectedRequirement) return;
     setIsGeneratingDataModels(true);
@@ -251,7 +264,7 @@ export default function App() {
     } finally { setIsGeneratingDataModels(false); }
   };
 
-  // ── Misc handlers ──────────────────────────────────────────────────────────
+  // ── Misc handlers ─────────────────────────────────────────────────────────
   const toggleSource = (id: string) => {
     setSelectedSourceIds((cur) => cur.includes(id) ? cur.filter((i) => i !== id) : [...cur, id]);
     setToast('Source selection updated');
@@ -293,6 +306,14 @@ export default function App() {
           <button onClick={() => setToast('AI design assistance is enabled')}><Icon name="spark" />AI Powered</button>
           <button onClick={() => setToast('Connector marketplace opened')}><Icon name="plug" />Plug &amp; Play</button>
           <button onClick={() => setToast('Cloud, on-prem, and hybrid targets supported')}><Icon name="globe" />Cross Platform</button>
+          {user && (
+            <UserMenu
+              user={user}
+              onProfile={() => setShowEditProfile(true)}
+              onResetPassword={() => setShowResetPassword(true)}
+              onLogout={handleLogout}
+            />
+          )}
         </div>
       </header>
 
@@ -407,6 +428,8 @@ export default function App() {
         />
       )}
       {uploading && <Loader message="Extracting requirements from document…" />}
+      {showEditProfile && <EditProfilePage onClose={() => setShowEditProfile(false)} view="profile" />}
+      {showResetPassword && <EditProfilePage onClose={() => setShowResetPassword(false)} view="reset-password" />}
       {uploadingExcel && <Loader message="Extracting requirements from spreadsheet…" />}
       {connectingAzure && <Loader message="Fetching stories from Azure DevOps…" />}
       {connectingJira && <Loader message="Fetching issues from Jira…" />}
