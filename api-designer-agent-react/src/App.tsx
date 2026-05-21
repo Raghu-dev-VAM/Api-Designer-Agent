@@ -20,7 +20,7 @@ import UserMenu from './components/UserMenu';
 
 export default function App() {
   // ── Auth state — MUST be first, before any early return ───────────────────
-  const [authed, setAuthed] = useState(isAuthenticated());
+  const authed = isAuthenticated();
   const [showEditProfile, setShowEditProfile] = useState(false);
   const [showResetPassword, setShowResetPassword] = useState(false);
 
@@ -54,11 +54,11 @@ export default function App() {
 
   // ── Auth gate — after ALL hooks ───────────────────────────────────────────
   if (!authed) {
-    return <AuthPage onAuthenticated={() => setAuthed(true)} />;
+    return <AuthPage />;
   }
 
   const user = getUser();
-  const handleLogout = () => { logout(); setAuthed(false); };
+  const handleLogout = () => logout();
 
   const connectingSource = connectingAzure ? 'azure' : connectingJira ? 'jira' : connectingConfluence ? 'confluence' : null;
 

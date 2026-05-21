@@ -39,6 +39,8 @@ function saveSession(token: string, user: AuthUser): void {
 export function logout(): void {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
+  // Full page reload → App re-reads localStorage → no token → sign-in page shows
+  window.location.href = '/';
 }
 
 // ── Auth headers — attach to every protected API call ─────────────────────────
@@ -86,6 +88,8 @@ export async function login(username: string, password: string): Promise<LoginRe
     email: loginData.email,
     created_at: new Date().toISOString(),
   });
+  // Full page reload → App re-reads localStorage → dashboard mounts cleanly
+  window.location.href = '/';
   return loginData;
 }
 

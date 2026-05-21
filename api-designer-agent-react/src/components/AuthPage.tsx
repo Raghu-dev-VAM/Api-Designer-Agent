@@ -2,11 +2,7 @@ import { useState } from 'react';
 import { login, register } from '../services/authService';
 import Icon from './Icon';
 
-interface Props {
-  onAuthenticated: () => void;
-}
-
-export default function AuthPage({ onAuthenticated }: Props) {
+export default function AuthPage() {
   const [mode, setMode]         = useState<'login' | 'register'>('login');
   const [username, setUsername] = useState('');
   const [email, setEmail]       = useState('');
@@ -25,10 +21,11 @@ export default function AuthPage({ onAuthenticated }: Props) {
     setLoading(true);
     try {
       await login(username.trim(), password);
-      onAuthenticated();
+      // login() calls window.location.href = '/' — page reloads, no further state updates needed
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Login failed');
-    } finally { setLoading(false); }
+      setLoading(false);
+    }
   };
 
   const handleRegister = async (e: React.FormEvent) => {

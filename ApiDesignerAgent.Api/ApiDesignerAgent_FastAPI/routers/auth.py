@@ -121,6 +121,9 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
 # ── POST /api/auth/register ───────────────────────────────────────────────────
 @router.post("/register", status_code=status.HTTP_201_CREATED, response_model=UserResponse)
 async def register(request: RegisterRequest):
+    # Always reload from disk so duplicate checks work after server restart
+    db = _load_db()
+    _users_db.update(db)
     if request.username in _users_db:
         raise HTTPException(status_code=400, detail="Username already exists.")
     if any(u["email"] == request.email for u in _users_db.values()):
@@ -142,6 +145,9 @@ async def register(request: RegisterRequest):
 # Swagger Authorize button posts here automatically
 @router.post("/login", response_model=LoginResponse)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    # Always reload from disk so login works after server restart
+    db = _load_db()
+    _users_db.update(db)
     user = _users_db.get(form_data.username)
     if not user or not _verify_password(form_data.password, user["hashed_password"]):
         raise HTTPException(
