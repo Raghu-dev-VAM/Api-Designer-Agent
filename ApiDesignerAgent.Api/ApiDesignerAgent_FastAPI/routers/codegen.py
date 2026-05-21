@@ -17,11 +17,12 @@ from asyncio import Queue
 from typing import AsyncGenerator
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import settings
+from dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/codegen", tags=["codegen"])
@@ -1121,7 +1122,7 @@ Full implementations using WebApplicationFactory. No TODOs.""",
 
 # -- Endpoints -----------------------------------------------------------------
 @router.post("/generate-dotnet", response_model=CodeGenStartResponse)
-async def start_codegen(request: CodeGenRequest):
+async def start_codegen(request: CodeGenRequest, _: dict = Depends(get_current_user)):
     if not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenAPI YAML is required.")
     job_id = str(uuid.uuid4())
@@ -1148,7 +1149,7 @@ async def stream_codegen(job_id: str):
 
 
 @router.get("/download/{job_id}/{version}")
-async def download_artifact(job_id: str, version: str):
+async def download_artifact(job_id: str, version: str, _: dict = Depends(get_current_user)):
     """Download any version of generated code.
     
     Args:
