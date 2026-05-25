@@ -23,6 +23,19 @@ from pydantic import BaseModel
 
 from config import settings
 from dependencies import get_current_user
+from rag_service import (
+    get_data_layer_context,
+    get_business_layer_context,
+    get_presentation_layer_context,
+    get_solution_structure_context,
+    get_full_context,
+    get_naming_rules,
+    get_folder_rules,
+    get_build_rules,
+    get_data_layer_slim,
+    get_business_layer_slim,
+    get_presentation_layer_slim,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/codegen", tags=["codegen"])
@@ -58,7 +71,7 @@ async def _stream_queue(job_id: str) -> AsyncGenerator[str, None]:
         return
     while True:
         try:
-            msg = await asyncio.wait_for(q.get(), timeout=300)
+            msg = await asyncio.wait_for(q.get(), timeout=600)
             yield msg
             if '"event":"done"' in msg or '"event":"error"' in msg:
                 break
@@ -70,7 +83,7 @@ async def _stream_queue(job_id: str) -> AsyncGenerator[str, None]:
 
 # -- Fence stripping ----------------------------------------------------------
 def _strip_fences(text: str) -> str:
-    """Remove ALL markdown code fences from any LLM response."""
+    """Remove ALL markdown code fences and artifacts from any LLM response."""
     text = text.strip()
     # Remove opening fence line (```csharp, ```json, ```xml, ``` etc)
     text = re.sub(r'^```[a-zA-Z]*\s*\n', '', text)
@@ -78,6 +91,10 @@ def _strip_fences(text: str) -> str:
     text = re.sub(r'\n```\s*$', '', text)
     # Remove any remaining standalone fence lines in the middle
     text = re.sub(r'^```[a-zA-Z]*\s*$', '', text, flags=re.MULTILINE)
+    # Remove trailing markdown headers (### , ## , # ) that LLMs sometimes append
+    text = re.sub(r'\n#{1,6}\s*$', '', text)
+    # Remove trailing ### or --- separators
+    text = re.sub(r'\n[#\-=]{2,}\s*$', '', text)
     return text.strip()
 
 
@@ -91,8 +108,12 @@ def _extract_files(text: str) -> dict[str, str]:
     for match in pattern.finditer(text):
         path = match.group(1).strip()
         code = _strip_fences(match.group(2))
-        if path and code:
-            files[path] = code
+        # Remove any trailing markdown artifacts (###, ---, ===)
+        code = re.sub(r'\n[#\-=]{2,}\s*$', '', code).rstrip()
+        # Remove leading LLM commentary lines (// Not generating..., // Skip..., etc.)
+        code = re.sub(r'^(\s*//[^\n]*\n)*(?=\s*(using|namespace|<|\[|public|internal|global))', '', code)
+        if path and code.strip():
+            files[path] = code.strip()
     return files
 
 
@@ -127,7 +148,158 @@ def _ensure_sln_endproject(content: str) -> str:
     return "\n".join(output)
 
 
-# -- Direct LLM call -----------------------------------------------------------
+# -- Deterministic solution file generator (no LLM needed) --------------------
+def _generate_sln(project_name: str, include_tests: bool) -> str:
+    """Generate a valid .sln file deterministically — never rely on LLM for this."""
+    # GUIDs for project type (C# class library / web app)
+    csproj_type = "{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}"
+    data_guid = "{" + str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{project_name}.Data")).upper() + "}"
+    biz_guid = "{" + str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{project_name}.Business")).upper() + "}"
+    pres_guid = "{" + str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{project_name}.Presentation")).upper() + "}"
+    test_guid = "{" + str(uuid.uuid5(uuid.NAMESPACE_DNS, f"{project_name}.Tests")).upper() + "}"
+
+    projects = [
+        (f"{project_name}.Data", f"{project_name}.Data/{project_name}.Data.csproj", data_guid),
+        (f"{project_name}.Business", f"{project_name}.Business/{project_name}.Business.csproj", biz_guid),
+        (f"{project_name}.Presentation", f"{project_name}.Presentation/{project_name}.Presentation.csproj", pres_guid),
+    ]
+    if include_tests:
+        projects.append((f"{project_name}.Tests", f"{project_name}.Tests/{project_name}.Tests.csproj", test_guid))
+
+    lines = [
+        "",
+        "Microsoft Visual Studio Solution File, Format Version 12.00",
+        "# Visual Studio Version 17",
+        "VisualStudioVersion = 17.8.34330.188",
+        "MinimumVisualStudioVersion = 10.0.40219.1",
+    ]
+    for name, path, guid in projects:
+        lines.append(f'Project("{csproj_type}") = "{name}", "{path}", "{guid}"')
+        lines.append("EndProject")
+
+    lines.append("Global")
+    lines.append("\tGlobalSection(SolutionConfigurationPlatforms) = preSolution")
+    lines.append("\t\tDebug|Any CPU = Debug|Any CPU")
+    lines.append("\t\tRelease|Any CPU = Release|Any CPU")
+    lines.append("\tEndGlobalSection")
+    lines.append("\tGlobalSection(ProjectConfigurationPlatforms) = postSolution")
+    for _, _, guid in projects:
+        lines.append(f"\t\t{guid}.Debug|Any CPU.ActiveCfg = Debug|Any CPU")
+        lines.append(f"\t\t{guid}.Debug|Any CPU.Build.0 = Debug|Any CPU")
+        lines.append(f"\t\t{guid}.Release|Any CPU.ActiveCfg = Release|Any CPU")
+        lines.append(f"\t\t{guid}.Release|Any CPU.Build.0 = Release|Any CPU")
+    lines.append("\tEndGlobalSection")
+    lines.append("EndGlobal")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# -- Deterministic .csproj generators ------------------------------------------
+def _generate_data_csproj(project_name: str) -> str:
+    return f"""<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+</Project>
+"""
+
+
+def _generate_business_csproj(project_name: str) -> str:
+    return f"""<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="AutoMapper" Version="13.0.1" />
+    <PackageReference Include="FluentValidation" Version="11.3.0" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions" Version="8.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../{project_name}.Data/{project_name}.Data.csproj" />
+  </ItemGroup>
+</Project>
+"""
+
+
+def _generate_presentation_csproj(project_name: str) -> str:
+    return f"""<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
+    <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
+    <PackageReference Include="Serilog.AspNetCore" Version="8.0.0" />
+    <PackageReference Include="Serilog.Sinks.Console" Version="5.0.0" />
+    <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
+    <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.0.3" />
+    <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../{project_name}.Business/{project_name}.Business.csproj" />
+  </ItemGroup>
+</Project>
+"""
+
+
+def _generate_tests_csproj(project_name: str) -> str:
+    return f"""<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="xunit" Version="2.6.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.5.4" />
+    <PackageReference Include="Moq" Version="4.20.70" />
+    <PackageReference Include="FluentAssertions" Version="6.12.0" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="8.0.0" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="../{project_name}.Presentation/{project_name}.Presentation.csproj" />
+  </ItemGroup>
+</Project>
+"""
+
+# -- Rate limiter for LLM calls ------------------------------------------------
+import time
+
+_last_call_time: float = 0.0
+_call_count: int = 0
+_MIN_CALL_INTERVAL = 1.0  # minimum seconds between calls
+
+
+async def _rate_limit_wait(q: Queue = None, step: int = 0):
+    """Minimal pacing between LLM calls."""
+    global _last_call_time, _call_count
+    _call_count += 1
+    now = time.time()
+    elapsed = now - _last_call_time
+    if elapsed < _MIN_CALL_INTERVAL:
+        await asyncio.sleep(_MIN_CALL_INTERVAL - elapsed)
+    _last_call_time = time.time()
+
+
 async def _llm(
     client: httpx.AsyncClient,
     system: str,
@@ -138,15 +310,17 @@ async def _llm(
     q: Queue,
     step: int,
 ) -> str:
-    delays = [3, 10, 20]
-    attempts = keys * 3
+    await _rate_limit_wait(q, step)
+    max_retries = 5
+    key_idx = _call_count % len(keys)
 
-    for i, api_key in enumerate(attempts[:len(delays) * len(keys)]):
+    for attempt in range(max_retries):
+        api_key = keys[(key_idx + attempt) % len(keys)]
         key_preview = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "***"
         try:
             await q.put(_sse("agent_message", {
                 "agent": step_label,
-                "preview": f"Calling LLM (attempt {i + 1}, key: {key_preview})...",
+                "preview": f"Calling LLM (attempt {attempt+1}/{max_retries}, key: {key_preview})...",
                 "step": step,
             }))
             resp = await client.post(
@@ -159,211 +333,123 @@ async def _llm(
                         {"role": "user",   "content": user},
                     ],
                     "temperature": 0.2,
-                    "max_tokens": 8192,
+                    "max_tokens": 4096,
                 },
-                timeout=120.0,
+                timeout=60.0,
             )
             if resp.status_code == 429:
-                delay = delays[min(i, len(delays) - 1)]
+                retry_after = int(resp.headers.get("retry-after", 0))
+                wait = min(retry_after, 30) if retry_after > 0 else min(10 * (attempt + 1), 30)
                 await q.put(_sse("agent_message", {
                     "agent": step_label,
-                    "preview": f"Rate limited (key: {key_preview}) — waiting {delay}s...",
+                    "preview": f"Rate limited - waiting {wait}s, switching key...",
                     "step": step,
                 }))
-                await asyncio.sleep(delay)
+                await asyncio.sleep(wait)
+                _last_call_time = time.time()
                 continue
             if resp.status_code == 401:
-                logger.error(f"Invalid API key: {key_preview}")
                 await q.put(_sse("agent_message", {
                     "agent": step_label,
-                    "preview": f"Invalid API key: {key_preview} — trying next key...",
+                    "preview": f"Key {key_preview} invalid, trying next...",
                     "step": step,
                 }))
                 continue
             if resp.status_code != 200:
-                error_msg = f"Groq {resp.status_code}: {resp.text[:200]}"
-                logger.error(f"{error_msg} (key: {key_preview})")
-                raise RuntimeError(error_msg)
+                raise RuntimeError(f"Groq {resp.status_code}: {resp.text[:200]}")
             content = resp.json()["choices"][0]["message"]["content"]
             await q.put(_sse("agent_message", {
                 "agent": step_label,
-                "preview": content[:120].replace("\n", " "),
+                "preview": content[:100].replace("\n", " "),
                 "step": step,
             }))
             return content
         except httpx.TimeoutException:
-            await q.put(_sse("agent_message", {"agent": step_label, "preview": f"Timeout (key: {key_preview}) — retrying...", "step": step}))
+            await q.put(_sse("agent_message", {
+                "agent": step_label,
+                "preview": f"Timeout on attempt {attempt+1}, retrying...",
+                "step": step,
+            }))
             continue
         except RuntimeError:
             raise
         except Exception as ex:
-            logger.error("LLM error with key %s: %s", key_preview, ex)
+            logger.error("LLM error: %s", ex)
+            await q.put(_sse("agent_message", {
+                "agent": step_label,
+                "preview": f"Error: {str(ex)[:80]}, retrying...",
+                "step": step,
+            }))
+            await asyncio.sleep(3)
             continue
 
-    raise RuntimeError(f"All LLM attempts failed for: {step_label}. Check API keys in logs.")
+    raise RuntimeError(f"All LLM attempts failed for: {step_label}. Keys exhausted after {max_retries} retries.")
 
 
-# -- .NET 8 Package standards injected into every generation prompt -----------
-DOTNET_STANDARDS = """
-STRICT .NET 8 PACKAGE AND API STANDARDS — follow exactly:
+# -- .NET 8 Package standards (lean — full rules in knowledge/build_rules.md) --
+DOTNET_PACKAGES = """
+.NET 8 COMPATIBLE PACKAGES (use exactly these versions):
+  Microsoft.EntityFrameworkCore 8.0.0
+  Microsoft.EntityFrameworkCore.SqlServer 8.0.0
+  Microsoft.EntityFrameworkCore.InMemory 8.0.0
+  AutoMapper 13.0.1 (NOT 14+, NOT AutoMapper.Extensions.Microsoft.DependencyInjection)
+  FluentValidation.AspNetCore 11.3.0
+  Serilog.AspNetCore 8.0.0
+  Swashbuckle.AspNetCore 6.5.0
+  Microsoft.AspNetCore.Authentication.JwtBearer 8.0.0
+  System.IdentityModel.Tokens.Jwt 7.0.3
 
-NuGet packages (use these exact versions):
-  <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="8.0.0" />
-  <PackageReference Include="Microsoft.EntityFrameworkCore" Version="8.0.0" />
-  <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="8.0.0" />
-  <PackageReference Include="Microsoft.EntityFrameworkCore.InMemory" Version="8.0.0" />
-  <PackageReference Include="Microsoft.EntityFrameworkCore.Tools" Version="8.0.0" />
-  <PackageReference Include="AutoMapper.Extensions.Microsoft.DependencyInjection" Version="12.0.1" />
-  <PackageReference Include="FluentValidation.AspNetCore" Version="11.3.0" />
-  <PackageReference Include="Serilog.AspNetCore" Version="8.0.0" />
-  <PackageReference Include="Serilog.Sinks.Console" Version="5.0.0" />
-  <PackageReference Include="Serilog.Sinks.File" Version="5.0.0" />
-  <PackageReference Include="Swashbuckle.AspNetCore" Version="6.5.0" />
-  <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="7.0.3" />
-  <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="8.0.0" />
-
-Program.cs — use ONLY these current APIs:
-  builder.Services.AddControllers()                          // NOT AddMvc()
-  builder.Services.AddEndpointsApiExplorer()
-  builder.Services.AddSwaggerGen()
-  app.UseSwagger()
-  app.UseSwaggerUI()
-  app.MapControllers()                                       // NOT UseEndpoints()
-  app.MapHealthChecks("/health")
-  builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer()
-  builder.Services.AddAuthorization()
-  builder.Services.AddMemoryCache()
-  builder.Services.AddRateLimiter()
-  builder.Host.UseSerilog()
-
-Using statements — always use:
-  using Microsoft.AspNetCore.Authentication.JwtBearer;
-  using Microsoft.IdentityModel.Tokens;
-  using Microsoft.EntityFrameworkCore;
-  using AutoMapper;
-  using FluentValidation;
-  using Serilog;
-
-DO NOT use:
-  - AddNewtonsoftJson (use System.Text.Json built-in)
-  - IHostingEnvironment (use IWebHostEnvironment)
-  - UseEndpoints (use MapControllers)
-  - AddMvc (use AddControllers)
-  - app.UseRouting() before MapControllers in .NET 8 minimal hosting
-  - Any package version below what is listed above
-
-CRITICAL GENERATION RULES:
-1. ENTITY NAMING: Use EXACT entity name consistently everywhere (e.g., if entity is "PersonalDetails", use "PersonalDetails" not "PersonalDetail")
-2. ALL PROPERTIES: Entity must have ALL properties that DTOs reference - no missing fields
-3. DATA TYPES: Use proper C# types (DateTime for dates, NOT string)
-4. USING STATEMENTS: Include ALL required usings at top of EVERY file:
-   - using System;
-   - using System.Collections.Generic;
-   - using System.Linq;
-   - using System.Threading;
-   - using System.Threading.Tasks;
-   - using Microsoft.EntityFrameworkCore; (for EF files)
-   - using Microsoft.Extensions.Logging; (for services)
-5. EXTENSION METHODS: Generate extension method for EVERY DTO conversion:
-   - ToDto(this Entity entity)
-   - ToEntity(this CreateDto dto)
-   - ToPagedDto(this IEnumerable<Entity> items, int total, int page, int pageSize)
-6. REPOSITORY DELETE: DeleteAsync must accept Guid id parameter, NOT entity object
-7. INTERFACE IMPLEMENTATIONS: Repository implementations MUST implement their interface (e.g., class PersonalDetailsRepository : IPersonalDetailsRepository)
-8. NO BASE CLASSES: Do NOT use BaseEntity or any base class unless explicitly defined
-9. COLUMN MAPPING: Property names and column names must match (e.g., ErrorMessage maps to ErrorMessage, NOT StackTrace)
-10. PAGING PARAMETERS: ToPagedDto MUST receive (items, totalCount, page, pageSize) - all 4 parameters
-11. NO ERROR MODELS: Do NOT generate ErrorRequest, ErrorResponse, or any error-specific models - use exceptions and middleware for error handling
-12. DTO REUSE: If CreateDto and UpdateDto have identical properties, generate only CreateDto and reuse it for updates
-13. FILE LOCATION: ALL files MUST be generated inside their respective project folders - NO files outside project structure
-14. COMPLETE LAYERS: For EVERY controller, generate corresponding service (Business layer) AND repository (Data layer)
+CRITICAL:
+- AutoMapper.Extensions.Microsoft.DependencyInjection is OBSOLETE — do NOT use it
+- Class libraries need Microsoft.Extensions.DependencyInjection.Abstractions 8.0.0 for IServiceCollection
+- Include ALL using statements in every file — never rely on transitive references
+- Interface signatures MUST exactly match implementation signatures
+- Do NOT call extension methods that don't exist
+- Do NOT create recursive extension methods
 """
 
 # -- Code reviewer -------------------------------------------------------------
 REVIEW_SYSTEM = """
-You are a strict .NET 8 code reviewer and fixer.
-Fix ALL issues below and return ONLY the corrected complete file. No explanation. No markdown fences.
+You are a .NET 8 code reviewer. Your job is to FIX build errors only.
+Return the corrected complete file. No explanation. No markdown fences.
 
-1. DEPRECATED PACKAGES — replace exactly:
-   AddNewtonsoftJson()                    -> remove it (System.Text.Json is built-in)
-   services.AddMvc()                      -> services.AddControllers()
-   app.UseEndpoints(e => e.MapControllers()) -> app.MapControllers()
-   IHostingEnvironment                    -> IWebHostEnvironment
-   Microsoft.AspNetCore.Mvc.NewtonsoftJson -> remove package reference
-   Any EF Core version < 8.0.0            -> Version="8.0.0"
-   Any JwtBearer version < 8.0.0          -> Version="8.0.0"
-   Any Serilog.AspNetCore version < 8.0.0 -> Version="8.0.0"
-   Any AutoMapper version < 12.0.1        -> Version="12.0.1"
-   Any FluentValidation version < 11.3.0  -> Version="11.3.0"
-   Any Swashbuckle version < 6.5.0        -> Version="6.5.0"
+FIX THESE ISSUES ONLY:
+1. Missing using statements — add ALL required usings for every type used in the file
+2. Syntax errors — fix them
+3. Missing interface implementations — add the missing methods
+4. Type mismatches — correct the types
+5. Missing constructors or DI parameters — add them
+6. Guid id -> change to int id
+7. NotImplementedException / TODO — replace with actual implementation
+8. Empty catch blocks — add logging or rethrow
+9. Interface-implementation signature mismatch — make them match exactly
+10. Recursive extension methods — fix to call framework method instead
+11. Calling extension methods that don't exist — remove or implement them
+12. Missing middleware extension methods — add them or use app.UseMiddleware<T>()
 
-2. BUILD ERRORS — fix:
-   - Add ALL missing using statements at top of file
-   - Fix namespace to match folder: {project_name}.<Folder>.<SubFolder>
-   - Implement ALL interface members (no partial implementations)
-   - Fix ALL type mismatches
-   - Add missing constructors with proper DI parameters
-   - Fix any syntax errors
-   - Remove any Error-related request/response models (ErrorRequest, ErrorResponse, etc.)
-   - Verify file path starts with project name - if not, correct the path
+CRITICAL USING DIRECTIVES (add if types are used):
+- Microsoft.EntityFrameworkCore (for DbContext, DbSet, UseSqlServer)
+- Microsoft.Extensions.DependencyInjection (for IServiceCollection)
+- Microsoft.Extensions.Configuration (for IConfiguration)
+- Microsoft.IdentityModel.Tokens (for TokenValidationParameters, SymmetricSecurityKey)
+- System.Security.Claims (for ClaimsIdentity, ClaimsPrincipal)
+- System.Threading.RateLimiting (for QueueProcessingOrder)
+- Microsoft.AspNetCore.RateLimiting (for AddRateLimiter)
+- Microsoft.AspNetCore.Mvc (for ProblemDetails, ControllerBase)
+- System.Text (for Encoding)
 
-3. NAMING STANDARDS — enforce:
-   - PascalCase: classes, methods, properties, interfaces, enums
-   - camelCase: local variables, method parameters
-   - _camelCase: private instance fields
-   - Interfaces MUST start with I (IUserService not UserService)
-   - Async methods MUST end with Async (GetAllAsync not GetAll)
-   - Full words only: cancellationToken not ct, repository not repo, request not req
+DO NOT CHANGE:
+- Class names (keep them exactly as they are)
+- Method names (keep them exactly as they are)
+- File structure or folder organization
+- Property names
+- The overall architecture pattern
 
-4. CODE QUALITY — enforce:
-   - ArgumentNullException.ThrowIfNull(param, nameof(param)) for all constructor params
-   - XML doc comments (///) on ALL public classes and methods
-   - CancellationToken MUST be last parameter on async methods
-   - Remove ALL TODO comments and NotImplementedException
-   - ALL async methods MUST return Task or Task<T>
-   - No empty catch blocks
-   - No hardcoded connection strings or secrets
-   - Remove duplicate service interfaces/implementations (e.g., if IPersonalDetailsService appears twice)
-   - Consolidate identical Create/Update DTOs with XML remarks about reusability
+If the file has no issues, return it unchanged.
+If the file is clearly in the wrong project, return:
+// SKIP: File in wrong location. Should be in [correct path]
 
-5. CRITICAL FILE LOCATION FIXES — if file path is wrong, SKIP this file and mark for regeneration:
-   BUSINESS PROJECT:
-   - Service interfaces MUST be in: {project_name}.Business/Services/Interfaces/
-   - Service implementations MUST be in: {project_name}.Business/Services/Implementations/
-   - DTOs MUST be in: {project_name}.Business/DTOs/
-   - Extensions MUST be in: {project_name}.Business/Extensions/
-   - DO NOT allow: {project_name}.Business/I*Service.cs (wrong location)
-   - DO NOT allow: {project_name}.Business/*Service.cs (wrong location)
-   - DO NOT allow: {project_name}.Business/I*Repository.cs (belongs in Data project)
-   - DO NOT allow: {project_name}.Business/*Repository.cs (belongs in Data project)
-   
-   DATA PROJECT:
-   - Repository interfaces MUST be in: {project_name}.Data/Repositories/Interfaces/
-   - Repository implementations MUST be in: {project_name}.Data/Repositories/Implementations/
-   - Entities MUST be in: {project_name}.Data/Entities/
-   - Configurations MUST be in: {project_name}.Data/Configurations/
-   - DO NOT allow: {project_name}.Data/I*Repository.cs (wrong location)
-   - DO NOT allow: {project_name}.Data/*Repository.cs (wrong location)
-   - DO NOT allow: {project_name}.Data/I*Service.cs (belongs in Business project)
-   - DO NOT allow: {project_name}.Data/*Service.cs (belongs in Business project)
-   
-   PRESENTATION PROJECT:
-   - Controllers MUST be in: {project_name}.Presentation/Controllers/
-   - Request models MUST be in: {project_name}.Presentation/Models/Requests/
-   - Response models MUST be in: {project_name}.Presentation/Models/Responses/
-   - Extensions MUST be in: {project_name}.Presentation/Extensions/
-   - DO NOT allow: {project_name}.Presentation/*Controller.cs (wrong location)
-   - DO NOT allow: {project_name}.Presentation/*Request.cs (wrong location)
-   - DO NOT allow: {project_name}.Presentation/*Response.cs (wrong location)
-   - DO NOT allow: {project_name}.Presentation/*Extensions.cs (wrong location)
-
-6. IF FILE IS IN WRONG LOCATION:
-   - Return comment: // SKIP: File in wrong location. Should be in [correct path]
-   - Do NOT attempt to fix the file
-   - Let regeneration handle it
-
-Return ONLY the fixed file content. No markdown fences. No explanation.
-If file is in wrong location, return: // SKIP: File in wrong location. Should be in [correct path]
+Return ONLY the fixed file content.
 """
 
 
@@ -382,6 +468,9 @@ async def _review_and_fix(
     total = len(cs_files)
     skipped_files = []
 
+    # Build a file list context so reviewer knows what exists
+    file_list_context = "Other files in this project:\n" + "\n".join(f"- {p}" for p in cs_files.keys())
+
     for i, (path, code) in enumerate(cs_files.items()):
         await q.put(_sse("agent_message", {
             "agent": "SeniorReviewer",
@@ -389,10 +478,30 @@ async def _review_and_fix(
             "step": step,
         }))
         try:
+            # Determine which layer this file belongs to for context
+            if f"{project_name}.Data" in path:
+                layer_context = get_data_layer_context(project_name)
+            elif f"{project_name}.Business" in path:
+                layer_context = get_business_layer_context(project_name)
+            elif f"{project_name}.Presentation" in path:
+                layer_context = get_presentation_layer_context(project_name)
+            else:
+                layer_context = ""
+
             result = await _llm(
                 client,
-                system=REVIEW_SYSTEM.replace("{project_name}", project_name),
-                user=f"File: {path}\n\n{code}",
+                system=REVIEW_SYSTEM,
+                user=f"""Architecture context:
+{layer_context}
+
+{file_list_context}
+
+Build rules:
+{DOTNET_PACKAGES}
+
+File to review: {path}
+
+{code}""",
                 step_label="SeniorReviewer",
                 keys=keys, model=model, q=q, step=step,
             )
@@ -402,10 +511,14 @@ async def _review_and_fix(
             if cleaned_result.strip().startswith("// SKIP:"):
                 logger.warning(f"Skipping file in wrong location: {path} - {cleaned_result}")
                 skipped_files.append(path)
-                # Don't include this file in the output
                 continue
             
-            fixed[path] = cleaned_result
+            # Safety: if reviewer returned something drastically shorter, keep original
+            if len(cleaned_result) < len(code) * 0.3:
+                logger.warning("Reviewer truncated %s (from %d to %d chars) — keeping original", path, len(code), len(cleaned_result))
+                fixed[path] = code
+            else:
+                fixed[path] = cleaned_result
         except Exception as ex:
             logger.warning("Review failed for %s: %s — keeping original", path, ex)
             fixed[path] = code
@@ -419,6 +532,89 @@ async def _review_and_fix(
 
     fixed.update(other_files)
     return fixed
+
+
+# -- Static build validator (no .NET SDK needed) ------------------------------
+def _validate_build(files: dict[str, str], project_name: str) -> list[str]:
+    """Validate cross-file consistency without .NET SDK.
+    Checks: missing references, namespace mismatches, interface implementations.
+    Returns list of error messages (empty = all good).
+    """
+    errors: list[str] = []
+    cs_files = {k: v for k, v in files.items() if k.endswith(".cs")}
+
+    # Collect all defined classes/interfaces
+    defined_types: set[str] = set()
+    for path, code in cs_files.items():
+        for match in re.finditer(r'(?:public|internal)\s+(?:static\s+)?(?:class|interface|record|struct)\s+(\w+)', code):
+            defined_types.add(match.group(1))
+
+    # Check each file for issues
+    for path, code in cs_files.items():
+        # 1. Check namespace matches folder
+        ns_match = re.search(r'namespace\s+([\w.]+)', code)
+        if ns_match:
+            ns = ns_match.group(1)
+            # Extract expected namespace from path
+            path_parts = path.replace("/", ".").replace(".cs", "")
+            # Remove filename from path to get folder namespace
+            folder_ns = ".".join(path.replace("/", ".").split(".")[:-1])
+            if not ns.startswith(project_name):
+                errors.append(f"{path}: namespace '{ns}' doesn't start with '{project_name}'")
+
+        # 2. Check for Guid id (should be int)
+        if re.search(r'\bGuid\s+[Ii]d\b', code) and 'Guid' in code:
+            if 'TokenService' not in path and 'Auth' not in path:
+                errors.append(f"{path}: uses Guid for Id (should be int)")
+
+        # 3. Check for empty classes
+        class_match = re.search(r'(?:public|internal)\s+(?:static\s+)?class\s+\w+[^{{]*\{{\s*\}}', code)
+        if class_match and 'Program' not in path:
+            errors.append(f"{path}: contains empty class body")
+
+        # 4. Check for NotImplementedException
+        if 'NotImplementedException' in code:
+            errors.append(f"{path}: contains NotImplementedException")
+
+        # 5. Check interface implementations reference existing interfaces
+        impl_match = re.search(r'class\s+\w+\s*:\s*([\w,\s<>]+)', code)
+        if impl_match:
+            bases = [b.strip().split('<')[0] for b in impl_match.group(1).split(',')]
+            for base in bases:
+                if base.startswith('I') and base[1:2].isupper() and base not in defined_types:
+                    if base not in ('IEntityTypeConfiguration', 'IServiceCollection', 'IConfiguration',
+                                    'ILogger', 'IHostEnvironment', 'IWebHostEnvironment',
+                                    'IDisposable', 'IAsyncDisposable'):
+                        errors.append(f"{path}: implements '{base}' but it's not defined in project")
+
+        # 6. Check Program.cs has AddBusinessServices
+        if 'Program.cs' in path:
+            if 'AddBusinessServices' not in code:
+                errors.append(f"{path}: missing AddBusinessServices() call")
+            if 'MapControllers' not in code:
+                errors.append(f"{path}: missing MapControllers() call")
+            if 'AddControllers' not in code:
+                errors.append(f"{path}: missing AddControllers() call")
+
+        # 7. Check AppDbContext has DbSet properties
+        if 'AppDbContext' in path:
+            if 'DbSet<' not in code:
+                errors.append(f"{path}: AppDbContext missing DbSet<> properties")
+
+    # 8. Check required files exist
+    required_patterns = [
+        f"{project_name}.Data/AppDbContext.cs",
+        f"{project_name}.Presentation/Program.cs",
+    ]
+    for pattern in required_patterns:
+        if not any(pattern in f for f in files.keys()):
+            errors.append(f"Missing required file: {pattern}")
+
+    # 9. Check .sln exists
+    if not any(f.endswith(".sln") for f in files.keys()):
+        errors.append("Missing .sln file")
+
+    return errors
 
 
 # -- YAML cleanup helper -------------------------------------------------------
@@ -475,7 +671,7 @@ async def _run_codegen(job_id: str, openapi_yaml: str, project_name: str, llm_pr
 
         await status("System", f"Starting code generation for {project_name}...", 0)
 
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
 
             # Step 1: Architect plan
             await status("Architect", f"Step 1/{total_steps} — Analysing OpenAPI spec...", 1)
@@ -517,13 +713,18 @@ No explanation. JSON only.""",
             
             await status("Architect", f"Plan: {len(controllers)} controller(s), {len(entities)} entity(ies)", 1)
 
-            # Step 2: Solution + project files
-            await status("Coder", f"Step 2/{total_steps} — Generating solution and project files...", 2)
-            tests_section = (
-                f"5. {project_name}.Tests/{project_name}.Tests.csproj — xUnit test project:\n"
-                f"   xunit, Moq, Microsoft.AspNetCore.Mvc.Testing, Microsoft.EntityFrameworkCore.InMemory,\n"
-                f"   FluentAssertions, ProjectReference to {project_name}.Presentation\n\n"
-            ) if include_tests else ""
+            # Architect generates solution structure deterministically (no LLM needed)
+            all_files[f"{project_name}.sln"] = _generate_sln(project_name, include_tests)
+            all_files[f"{project_name}.Data/{project_name}.Data.csproj"] = _generate_data_csproj(project_name)
+            all_files[f"{project_name}.Business/{project_name}.Business.csproj"] = _generate_business_csproj(project_name)
+            all_files[f"{project_name}.Presentation/{project_name}.Presentation.csproj"] = _generate_presentation_csproj(project_name)
+            if include_tests:
+                all_files[f"{project_name}.Tests/{project_name}.Tests.csproj"] = _generate_tests_csproj(project_name)
+            await status("Architect", f"Solution structure created ({len(all_files)} files)", 1)
+            await save_incremental("1_architect")
+
+            # Step 2: Config files (appsettings, README)
+            await status("Coder", f"Step 2/{total_steps} — Generating config files...", 2)
 
             proj_text = await _llm(
                 client,
@@ -533,181 +734,165 @@ Generate COMPLETE files using EXACTLY this format:
 <complete code>
 === END FILE ===
 No explanation outside file blocks.""",
-                user=f"""{DOTNET_STANDARDS}
-Generate a clean architecture solution for '{project_name}':
+                user=f"""{DOTNET_PACKAGES}
+{get_solution_structure_context(project_name)}
+{get_naming_rules()}
+Generate configuration files for '{project_name}':
 
-1. {project_name}.sln — solution file referencing all projects
+1. {project_name}.Presentation/appsettings.json — include sections:
+   ConnectionStrings.DefaultConnection (SQL Server placeholder)
+   JwtSettings: Secret, Issuer, Audience, ExpiryMinutes
+   Serilog: MinimumLevel, WriteTo (Console + File)
+   AllowedHosts: "*"
 
-2. {project_name}.Data/{project_name}.Data.csproj — class library:
-   Microsoft.EntityFrameworkCore 8.0.0, Microsoft.EntityFrameworkCore.SqlServer 8.0.0,
-   Microsoft.EntityFrameworkCore.InMemory 8.0.0, Microsoft.EntityFrameworkCore.Tools 8.0.0
+2. {project_name}.Presentation/appsettings.Development.json — dev overrides:
+   ConnectionStrings.DefaultConnection using InMemory
+   Serilog MinimumLevel: Debug
 
-3. {project_name}.Business/{project_name}.Business.csproj — class library:
-   AutoMapper.Extensions.Microsoft.DependencyInjection 12.0.1, FluentValidation 11.3.0,
-   ProjectReference to {project_name}.Data
-
-4. {project_name}.Presentation/{project_name}.Presentation.csproj — ASP.NET Core Web API:
-   Microsoft.AspNetCore.Authentication.JwtBearer 8.0.0, Swashbuckle.AspNetCore 6.5.0,
-   Serilog.AspNetCore 8.0.0, Serilog.Sinks.Console 5.0.0, Serilog.Sinks.File 5.0.0,
-   System.IdentityModel.Tokens.Jwt 7.0.3,
-   ProjectReference to {project_name}.Business
-
-{tests_section}5. {project_name}.Presentation/appsettings.json — JWT, Serilog, ConnectionStrings sections
-6. {project_name}.Presentation/appsettings.Development.json — dev overrides with InMemory db
-7. README.md — solution structure and setup instructions""",
+3. README.md — solution structure, setup instructions, how to run
+   Mention: dotnet restore, dotnet build, dotnet run --project {project_name}.Presentation
+   List all projects and their purpose""",
                 step_label="Coder", keys=keys, model=model, q=q, step=2,
             )
             extracted_proj_files = _extract_files(proj_text)
-            if f"{project_name}.sln" in extracted_proj_files:
-                extracted_proj_files[f"{project_name}.sln"] = _ensure_sln_endproject(extracted_proj_files[f"{project_name}.sln"])
             all_files.update(extracted_proj_files)
-            await status("Coder", f"Solution files done ({len(all_files)} files so far)", 2)
+            await status("Coder", f"Config files done ({len(all_files)} files so far)", 2)
             await save_incremental("2_solution")
 
             # Step 3: Auth & Security (Presentation project)
             await status("SecurityExpert", f"Step 3/{total_steps} — Generating JWT auth, middleware (Presentation)...", 3)
-            auth_text = await _llm(
-                client,
-                system="""You are a .NET 8 security architect.
-Generate COMPLETE C# files using EXACTLY this format:
-=== FILE: <path> ===
-<complete code>
-=== END FILE ===
-Full implementations. No TODOs.""",
-                user=f"""{DOTNET_STANDARDS}
-Generate security files inside '{project_name}.Presentation' project:
-1. {project_name}.Presentation/Auth/JwtSettings.cs — namespace {project_name}.Presentation.Auth
-2. {project_name}.Presentation/Auth/ITokenService.cs — interface: GenerateAccessToken, GenerateRefreshToken, GetPrincipalFromExpiredToken
-3. {project_name}.Presentation/Auth/JwtTokenService.cs — full JWT + refresh token HMAC-SHA256
-4. {project_name}.Presentation/Auth/TokenRequest.cs — Email, Password
-5. {project_name}.Presentation/Auth/TokenResponse.cs — AccessToken, RefreshToken, ExpiresAt
-6. {project_name}.Presentation/Middleware/ExceptionHandlingMiddleware.cs — ProblemDetails RFC 7807
-7. {project_name}.Presentation/Middleware/RequestLoggingMiddleware.cs — Serilog logging
-8. {project_name}.Presentation/Extensions/ServiceCollectionExtensions.cs — register JWT, Swagger with bearer, rate limiting, CORS""",
-                step_label="SecurityExpert", keys=keys, model=model, q=q, step=3,
-            )
-            all_files.update(_extract_files(auth_text))
+            # Step 3 LLM call skipped - using deterministic stubs
+            # TODO: Re-enable LLM auth generation when token budget allows
+            _pn = project_name
+            all_files[f"{_pn}.Presentation/Authorization/JwtSettings.cs"] = "namespace " + _pn + ".Presentation.Authorization;\n\npublic class JwtSettings\n{\n    public string Secret { get; set; } = \"your-secret-key-that-is-at-least-32-chars!\";\n    public string Issuer { get; set; } = \"" + _pn + "\";\n    public string Audience { get; set; } = \"" + _pn + "\";\n    public int ExpiryMinutes { get; set; } = 60;\n}"
+            all_files[f"{_pn}.Presentation/Authorization/ITokenService.cs"] = "namespace " + _pn + ".Presentation.Authorization;\n\npublic interface ITokenService { string GenerateToken(string userId, string role); }"
+            all_files[f"{_pn}.Presentation/Authorization/JwtTokenService.cs"] = "using System.IdentityModel.Tokens.Jwt;\nusing System.Security.Claims;\nusing System.Text;\nusing Microsoft.IdentityModel.Tokens;\n\nnamespace " + _pn + ".Presentation.Authorization;\n\npublic class JwtTokenService : ITokenService\n{\n    private readonly JwtSettings _s;\n    public JwtTokenService(JwtSettings s) { _s = s; }\n    public string GenerateToken(string userId, string role)\n    {\n        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_s.Secret));\n        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);\n        var token = new JwtSecurityToken(_s.Issuer, _s.Audience, new[] { new Claim(ClaimTypes.NameIdentifier, userId), new Claim(ClaimTypes.Role, role) }, expires: DateTime.UtcNow.AddMinutes(_s.ExpiryMinutes), signingCredentials: creds);\n        return new JwtSecurityTokenHandler().WriteToken(token);\n    }\n}"
+            all_files[f"{_pn}.Presentation/Middleware/ExceptionHandlingMiddleware.cs"] = "using System.Net;\nusing Microsoft.AspNetCore.Mvc;\n\nnamespace " + _pn + ".Presentation.Middleware;\n\npublic class ExceptionHandlingMiddleware\n{\n    private readonly RequestDelegate _next; private readonly ILogger<ExceptionHandlingMiddleware> _log;\n    public ExceptionHandlingMiddleware(RequestDelegate next, ILogger<ExceptionHandlingMiddleware> log) { _next = next; _log = log; }\n    public async Task InvokeAsync(HttpContext ctx) { try { await _next(ctx); } catch (KeyNotFoundException ex) { _log.LogWarning(ex, \"Not found\"); ctx.Response.StatusCode = 404; await ctx.Response.WriteAsJsonAsync(new ProblemDetails { Title = \"Not Found\", Status = 404, Detail = ex.Message }); } catch (Exception ex) { _log.LogError(ex, \"Error\"); ctx.Response.StatusCode = 500; await ctx.Response.WriteAsJsonAsync(new ProblemDetails { Title = \"Error\", Status = 500 }); } }\n}"
+            all_files[f"{_pn}.Presentation/Middleware/RequestLoggingMiddleware.cs"] = "using System.Diagnostics;\n\nnamespace " + _pn + ".Presentation.Middleware;\n\npublic class RequestLoggingMiddleware\n{\n    private readonly RequestDelegate _next; private readonly ILogger<RequestLoggingMiddleware> _log;\n    public RequestLoggingMiddleware(RequestDelegate next, ILogger<RequestLoggingMiddleware> log) { _next = next; _log = log; }\n    public async Task InvokeAsync(HttpContext ctx) { var sw = Stopwatch.StartNew(); await _next(ctx); _log.LogInformation(\"{M} {P} {S} in {E}ms\", ctx.Request.Method, ctx.Request.Path, ctx.Response.StatusCode, sw.ElapsedMilliseconds); }\n}"
+            all_files[f"{_pn}.Presentation/Middleware/MiddlewareExtensions.cs"] = "namespace " + _pn + ".Presentation.Middleware;\n\npublic static class MiddlewareExtensions\n{\n    public static IApplicationBuilder UseExceptionHandling(this IApplicationBuilder app) => app.UseMiddleware<ExceptionHandlingMiddleware>();\n    public static IApplicationBuilder UseRequestLogging(this IApplicationBuilder app) => app.UseMiddleware<RequestLoggingMiddleware>();\n}"
             await status("SecurityExpert", f"Auth files done ({len(all_files)} files so far)", 3)
             await save_incremental("3_auth")
 
-            # Step 4: Entities (Data) + DTOs per layer + extension converters
-            await status("Coder", f"Step 4/{total_steps} — Generating entities, DTOs per layer, extension converters...", 4)
+            # Step 4: Models + Extensions + Validators per entity
+            await status("Coder", f"Step 4/{total_steps} - Generating models, extensions, validators...", 4)
             for entity in entities[:3]:
-                model_text = await _llm(
+                # 4a: Data model FIRST - then pass to other layers for consistency
+                data_model_text = await _llm(
                     client,
                     system="""You are a senior .NET 8 developer.
 Generate COMPLETE C# files using EXACTLY this format:
 === FILE: <path> ===
 <complete code>
 === END FILE ===
+Full implementations. No TODOs. Initialize all string properties = string.Empty.""",
+                    user=f"""{get_data_layer_context(project_name)}
 
-CRITICAL REQUIREMENTS:
-1. Use EXACT entity name consistently (if entity is "PersonalDetails", use "PersonalDetails" everywhere, NOT "PersonalDetail")
-2. Include ALL required using statements at top of EVERY file
-3. Use proper C# types (DateTime for dates, int for numbers, NOT string)
-4. Generate ALL extension methods for EVERY DTO
-5. Entity must have ALL properties that DTOs reference
-6. NO base classes unless explicitly defined
-7. DO NOT generate any Error-related models (ErrorRequest, ErrorResponse, etc.) - use exceptions
-8. If Create and Update DTOs have same properties, generate only CreateDto and add a note to reuse it
-9. ALL files MUST be inside project folders - verify paths start with project name
-Full implementations. No TODOs.""",
-                    user=f"""Generate files for entity '{entity}' across all projects:
+Generate Data model for '{entity}' in '{project_name}.Data':
 
-CRITICAL FILE LOCATION RULES:
-- ALL files MUST be inside their respective project folders
-- NEVER create files at project root level
-- ALWAYS include full path with folder structure
-- Verify path starts with {project_name}.<ProjectName>/
+File 1: {project_name}.Data/Models/{entity}.cs
+- namespace {project_name}.Data.Models
+- public class {entity}
+- Properties: Id (int), CreatedAt (DateTime), UpdatedAt (DateTime) + ALL business fields from OpenAPI
+- Initialize strings = string.Empty. Use proper C# types.
 
-IMPORTANT: Use entity name "{entity}" EXACTLY as-is in ALL files. Do NOT change singular/plural.
+File 2: {project_name}.Data/Configurations/{entity}Configuration.cs
+- namespace {project_name}.Data.Configurations
+- using {project_name}.Data.Models;
+- using Microsoft.EntityFrameworkCore;
+- using Microsoft.EntityFrameworkCore.Metadata.Builders;
+- IEntityTypeConfiguration<{entity}>
+- HasKey(x => x.Id), Property(x => x.Id).ValueGeneratedOnAdd()
 
-DATA PROJECT — {project_name}.Data:
-1. {project_name}.Data/Entities/{entity}.cs — EF Core entity, namespace {project_name}.Data.Entities
-   CRITICAL: File MUST be inside Entities folder
-   Required usings: using System; using System.ComponentModel.DataAnnotations;
-   Properties: Id (Guid), CreatedAt (DateTime), UpdatedAt (DateTime), CreatedBy (string) + all business fields from spec
-   Use proper types: DateTime for dates, decimal for money, int for numbers
-
-BUSINESS PROJECT — {project_name}.Business:
-2. {project_name}.Business/DTOs/{entity}Dto.cs — business layer DTO, namespace {project_name}.Business.DTOs
-   CRITICAL: File MUST be inside DTOs folder
-   Required usings: using System;
-   All public properties matching entity with SAME types
-3. {project_name}.Business/DTOs/Create{entity}Dto.cs — create input DTO with FluentValidation AbstractValidator
-   CRITICAL: File MUST be inside DTOs folder
-   Required usings: using System; using FluentValidation;
-   Use proper types matching entity
-   IMPORTANT: Compare properties with Update - if identical, add XML comment: "/// <remarks>This DTO can be reused for Update operations</remarks>"
-4. {project_name}.Business/DTOs/Update{entity}Dto.cs — update input DTO with FluentValidation AbstractValidator
-   CRITICAL: File MUST be inside DTOs folder
-   Required usings: using System; using FluentValidation;
-   Use proper types matching entity
-   IMPORTANT: If properties match CreateDto exactly, you may skip this file and add comment in CreateDto to reuse it
-5. {project_name}.Business/DTOs/Paged{entity}Dto.cs — paged result
-   CRITICAL: File MUST be inside DTOs folder
-   Required usings: using System; using System.Collections.Generic;
-   Properties: Items (List<{entity}Dto>), TotalCount (int), Page (int), PageSize (int), TotalPages (int)
-6. {project_name}.Business/Extensions/{entity}MappingExtensions.cs — static extension methods:
-   CRITICAL: File MUST be inside Extensions folder
-   Required usings: using System; using System.Collections.Generic; using System.Linq; using {project_name}.Data.Entities; using {project_name}.Business.DTOs;
-   MUST generate ALL these methods:
-   - public static {entity}Dto ToDto(this {entity} entity)
-   - public static {entity} ToEntity(this Create{entity}Dto dto)
-   - public static {entity} ApplyUpdate(this {entity} entity, Update{entity}Dto dto)
-   - public static Paged{entity}Dto ToPagedDto(this IEnumerable<{entity}> items, int totalCount, int page, int pageSize)
-
-PRESENTATION PROJECT — {project_name}.Presentation:
-7. {project_name}.Presentation/Models/Requests/Create{entity}Request.cs — API request model with FluentValidation
-   CRITICAL: File MUST be inside Models/Requests folder
-   Required usings: using System; using FluentValidation;
-   IMPORTANT: If properties match Update, add XML comment: "/// <remarks>This request can be reused for Update operations</remarks>"
-8. {project_name}.Presentation/Models/Requests/Update{entity}Request.cs — API request model with FluentValidation
-   CRITICAL: File MUST be inside Models/Requests folder
-   Required usings: using System; using FluentValidation;
-   IMPORTANT: If properties match CreateRequest exactly, you may skip this file and reuse CreateRequest
-   DO NOT generate ErrorRequest or ErrorResponse models - errors handled by middleware
-9. {project_name}.Presentation/Models/Responses/{entity}Response.cs — API response model
-   CRITICAL: File MUST be inside Models/Responses folder
-   Required usings: using System;
-10. {project_name}.Presentation/Models/Responses/Paged{entity}Response.cs — paged API response
-    CRITICAL: File MUST be inside Models/Responses folder
-    Required usings: using System; using System.Collections.Generic;
-11. {project_name}.Presentation/Extensions/{entity}RequestExtensions.cs — static extension methods:
-    CRITICAL: File MUST be inside Extensions folder
-    Required usings: using System; using System.Collections.Generic; using System.Linq; using {project_name}.Business.DTOs; using {project_name}.Presentation.Models.Requests; using {project_name}.Presentation.Models.Responses;
-    MUST generate ALL these methods:
-    - public static Create{entity}Dto ToCreateDto(this Create{entity}Request request)
-    - public static Update{entity}Dto ToUpdateDto(this Update{entity}Request request)
-    - public static {entity}Response ToResponse(this {entity}Dto dto)
-    - public static Paged{entity}Response ToPagedResponse(this Paged{entity}Dto paged)
-
-OpenAPI context:
+OpenAPI spec:
 {openapi_yaml[:1500]}""",
                     step_label="Coder", keys=keys, model=model, q=q, step=4,
                 )
-                all_files.update(_extract_files(model_text))
-            await status("Coder", f"Entities + DTOs done ({len(all_files)} files so far)", 4)
-            await save_incremental("4_entities_dtos")
+                all_files.update(_extract_files(data_model_text))
+
+                # Extract Data model to pass to other layers for property consistency
+                data_model_key = f"{project_name}.Data/Models/{entity}.cs"
+                data_model_content = all_files.get(data_model_key, "// Data model not generated")
+
+                # 4b: Business models + extensions - MUST match Data model properties
+                biz_model_text = await _llm(
+                    client,
+                    system="""You are a senior .NET 8 developer.
+Generate COMPLETE C# files using EXACTLY this format:
+=== FILE: <path> ===
+<complete code>
+=== END FILE ===
+Full implementations. Map ALL properties explicitly. No placeholder comments. Initialize strings = string.Empty.""",
+                    user=f"""{get_business_layer_context(project_name)}
+
+REFERENCE - Data model (Business MUST have same properties):
+{data_model_content}
+
+Generate Business layer for '{entity}' in '{project_name}.Business':
+
+File 1: {project_name}.Business/Models/{entity}.cs - COPY all properties from Data model above
+File 2: {project_name}.Business/Models/Create{entity}.cs - all props EXCEPT Id, CreatedAt, UpdatedAt
+File 3: {project_name}.Business/Models/Update{entity}.cs - same as Create. MUST generate.
+File 4: {project_name}.Business/Models/Paged{entity}.cs - List<{entity}> Items, int TotalCount, Page, PageSize
+File 5: {project_name}.Business/Extensions/{entity}Extensions.cs
+  - using {project_name}.Data.Models; using {project_name}.Business.Models;
+  - ToBusinessModel(this Data.Models.{entity}) returns Business.Models.{entity} - map ALL props
+  - ToDataModel(this Business.Models.Create{entity}) returns Data.Models.{entity} - map ALL props, set CreatedAt=UtcNow
+  - ToBusinessModels(this IEnumerable<Data.Models.{entity}>) returns List<Business.Models.{entity}>
+  - ToPagedResult(...) returns Business.Models.Paged{entity}
+
+Generate ALL 5 files.""",
+                    step_label="Coder", keys=keys, model=model, q=q, step=4,
+                )
+                all_files.update(_extract_files(biz_model_text))
+
+                # 4c: Presentation models + extensions + validators - MUST match Data model properties
+                pres_model_text = await _llm(
+                    client,
+                    system="""You are a senior .NET 8 developer.
+Generate COMPLETE C# files using EXACTLY this format:
+=== FILE: <path> ===
+<complete code>
+=== END FILE ===
+Full implementations. Map ALL properties explicitly. No placeholder comments. Initialize strings = string.Empty.""",
+                    user=f"""{get_presentation_layer_context(project_name)}
+
+REFERENCE - Data model (Presentation MUST have same properties):
+{data_model_content}
+
+Generate Presentation layer for '{entity}' in '{project_name}.Presentation':
+
+File 1: {project_name}.Presentation/Models/{entity}.cs - COPY all properties from Data model
+File 2: {project_name}.Presentation/Models/Create{entity}.cs - all props EXCEPT Id, CreatedAt, UpdatedAt
+File 3: {project_name}.Presentation/Models/Update{entity}.cs - same as Create. MUST generate.
+File 4: {project_name}.Presentation/Models/Paged{entity}.cs - List<{entity}> Items, int TotalCount, Page, PageSize
+File 5: {project_name}.Presentation/Extensions/{entity}Extensions.cs
+  - using {project_name}.Business.Models; using {project_name}.Presentation.Models;
+  - ToBusinessModel(this Presentation.Models.Create{entity}) returns Business.Models.Create{entity}
+  - ToBusinessModel(this Presentation.Models.Update{entity}) returns Business.Models.Update{entity}
+  - ToApiModel(this Business.Models.{entity}) returns Presentation.Models.{entity}
+  - ToPagedApiModel(this Business.Models.Paged{entity}) returns Presentation.Models.Paged{entity}
+File 6: {project_name}.Presentation/Validators/Create{entity}Validator.cs - AbstractValidator<Create{entity}>
+File 7: {project_name}.Presentation/Validators/Update{entity}Validator.cs - AbstractValidator<Update{entity}>
+
+Generate ALL 7 files.""",
+                    step_label="Coder", keys=keys, model=model, q=q, step=4,
+                )
+                all_files.update(_extract_files(pres_model_text))
+
+            await status("Coder", f"Models + Extensions done ({len(all_files)} files so far)", 4)
+            await save_incremental("4_models")
 
             # Step 5: DbContext + Repositories (Data project)
             await status("Coder", f"Step 5/{total_steps} — Generating DbContext and repositories (Data project)...", 5)
             
-            # Generate configurations for available entities (up to 3)
             config_prompts = []
             for idx, entity in enumerate(entities[:3], 1):
-                # Build the configuration prompt without backslashes in f-string
-                using_stmt = f"using Microsoft.EntityFrameworkCore; using Microsoft.EntityFrameworkCore.Metadata.Builders; using {project_name}.Data.Entities;"
                 config_prompts.append(
-                    f"{idx+1}. {project_name}.Data/Configurations/{entity}Configuration.cs — namespace {project_name}.Data.Configurations\n"
-                    f"   class {entity}Configuration : IEntityTypeConfiguration<{entity}>\n"
-                    f"   include table mapping, primary key, indexes, and constraints"
+                    f"{idx+1}. {project_name}.Data/Configurations/{entity}Configuration.cs"
                 )
+            config_list = ", ".join(entities[:3])
             
-            # Build the using statement separately to avoid backslash in f-string
-            required_usings = f"using Microsoft.EntityFrameworkCore; using Microsoft.EntityFrameworkCore.Metadata.Builders; using {project_name}.Data.Entities;"
-            config_prompts_joined = "\n".join(config_prompts)
-            
+            # 5a: AppDbContext
             db_text = await _llm(
                 client,
                 system="""You are a senior .NET 8 developer.
@@ -715,27 +900,60 @@ Generate COMPLETE C# files using EXACTLY this format:
 === FILE: <path> ===
 <complete code>
 === END FILE ===
-
-CRITICAL REQUIREMENTS:
-1. Include ALL required using statements at top of EVERY file
-2. Use entity names EXACTLY as provided
-3. NO base classes (no BaseEntity)
-4. Property names and column names must match exactly
 Full implementations. No TODOs.""",
-                user=f"""Generate Data project infrastructure files for '{project_name}.Data':
-1. {project_name}.Data/AppDbContext.cs — namespace {project_name}.Data
-   Required usings: using System; using System.Threading; using System.Threading.Tasks; using Microsoft.EntityFrameworkCore; using {project_name}.Data.Entities; using {project_name}.Data.Configurations;
-   Contains a single AppDbContext class only (no other classes in this file)
-   Add DbSet<{entities[0]}> properties for all entities: {', '.join(entities[:3])}
-   OnModelCreating applies configuration classes with modelBuilder.ApplyConfiguration(new {entities[0]}Configuration())
-   SaveChangesAsync override sets CreatedAt/UpdatedAt automatically
-   DO NOT use BaseEntity or any base class
-{config_prompts_joined}
-   Each configuration must include required usings: {required_usings}""",
+                user=f"""{get_data_layer_context(project_name)}
+
+Generate AppDbContext for '{project_name}.Data':
+
+File 1: {project_name}.Data/AppDbContext.cs
+- namespace {project_name}.Data
+- using {project_name}.Data.Models;
+- using Microsoft.EntityFrameworkCore;
+- DbSet<> properties for ALL entities: {config_list}
+- OnModelCreating: apply all configurations
+- SaveChangesAsync override: set CreatedAt on insert, UpdatedAt on update
+- Use {project_name}.Data.Models namespace for entities
+- DO NOT use BaseEntity or any base class. Each entity has its own Id, CreatedAt, UpdatedAt properties.
+
+Full implementation. Include all required usings.""",
                 step_label="Coder", keys=keys, model=model, q=q, step=5,
             )
             all_files.update(_extract_files(db_text))
 
+            # 5b: IBaseRepository + BaseRepository
+            base_repo_text = await _llm(
+                client,
+                system="""You are a senior .NET 8 developer.
+Generate COMPLETE C# files using EXACTLY this format:
+=== FILE: <path> ===
+<complete code>
+=== END FILE ===
+Full implementations. No TODOs.""",
+                user=f"""{get_data_layer_context(project_name)}
+
+Generate base repository infrastructure:
+
+File 1: {project_name}.Data/Contracts/IBaseRepository.cs
+- namespace {project_name}.Data.Contracts
+- public interface IBaseRepository<T> where T : class
+- Methods: GetByIdAsync(int id, CancellationToken), GetAllAsync(int page, int pageSize, CancellationToken), CreateAsync(T entity, CancellationToken), UpdateAsync(T entity, CancellationToken), DeleteAsync(int id, CancellationToken), ExistsAsync(int id, CancellationToken)
+- All return Task<T?>, Task<(IEnumerable<T>, int)>, Task<T>, Task<bool> as appropriate
+
+File 2: {project_name}.Data/Repositories/BaseRepository.cs
+- namespace {project_name}.Data.Repositories
+- using {project_name}.Data.Contracts;
+- using Microsoft.EntityFrameworkCore;
+- public class BaseRepository<T> : IBaseRepository<T> where T : class
+- protected readonly AppDbContext _context; protected readonly DbSet<T> _dbSet;
+- Constructor sets _context and _dbSet = context.Set<T>()
+- Full CRUD: FindAsync, Skip/Take, Add, Remove, SaveChangesAsync
+
+Both files must compile independently. Include ALL usings.""",
+                step_label="Coder", keys=keys, model=model, q=q, step=5,
+            )
+            all_files.update(_extract_files(base_repo_text))
+
+            # 5c: Per-entity repositories
             for entity in entities[:3]:
                 repo_text = await _llm(
                     client,
@@ -744,72 +962,54 @@ Generate COMPLETE C# files using EXACTLY this format:
 === FILE: <path> ===
 <complete code>
 === END FILE ===
-
-CRITICAL REQUIREMENTS:
-1. Include ALL required using statements
-2. Repository class MUST implement its interface
-3. DeleteAsync accepts Guid id parameter, NOT entity object
-4. Use entity name EXACTLY as provided
 Full implementations. No TODOs.""",
-                    user=f"""Generate Data project repository files for '{entity}' in '{project_name}.Data':
+                    user=f"""{get_data_layer_context(project_name)}
 
-CRITICAL FILE LOCATION RULES:
-- Repository interface MUST be in Repositories/Interfaces folder
-- Repository implementation MUST be in Repositories/Implementations folder
-- DO NOT create repository files at Data project root
-- DO NOT create service interfaces or implementations in Data project (they belong in Business project)
-- Verify full path includes folder structure
+Generate repository for '{entity}':
 
-1. {project_name}.Data/Repositories/Interfaces/I{entity}Repository.cs — namespace {project_name}.Data.Repositories
-   CRITICAL: File MUST be inside Repositories/Interfaces folder
-   Required usings: using System; using System.Collections.Generic; using System.Threading; using System.Threading.Tasks; using {project_name}.Data.Entities;
-   Methods:
-   GetByIdAsync(Guid id, CancellationToken cancellationToken) -> Task<{entity}?>
-   GetAllAsync(int page, int pageSize, CancellationToken cancellationToken) -> Task<(IEnumerable<{entity}> items, int total)>
-   CreateAsync({entity} entity, CancellationToken cancellationToken) -> Task<{entity}>
-   UpdateAsync({entity} entity, CancellationToken cancellationToken) -> Task<{entity}>
-   DeleteAsync(Guid id, CancellationToken cancellationToken) -> Task<bool>
-   ExistsAsync(Guid id, CancellationToken cancellationToken) -> Task<bool>
+File 1: {project_name}.Data/Contracts/I{entity}Repository.cs
+- namespace {project_name}.Data.Contracts
+- using {project_name}.Data.Models;
+- public interface I{entity}Repository : IBaseRepository<{entity}> {{ }}
 
-2. {project_name}.Data/Repositories/Implementations/{entity}Repository.cs — namespace {project_name}.Data.Repositories
-   CRITICAL: File MUST be inside Repositories/Implementations folder
-   Required usings: using System; using System.Collections.Generic; using System.Linq; using System.Threading; using System.Threading.Tasks; using Microsoft.EntityFrameworkCore; using {project_name}.Data.Entities;
-   MUST implement I{entity}Repository interface: public class {entity}Repository : I{entity}Repository
-   Full EF Core implementation using AppDbContext, async/await, Skip/Take pagination
-   DeleteAsync implementation: find entity by id, then delete it
+File 2: {project_name}.Data/Repositories/{entity}Repository.cs
+- namespace {project_name}.Data.Repositories
+- using {project_name}.Data.Models;
+- using {project_name}.Data.Contracts;
+- public class {entity}Repository : BaseRepository<{entity}>, I{entity}Repository
+- Constructor: public {entity}Repository(AppDbContext context) : base(context) {{ }}
 
-DO NOT GENERATE:
-- Service interfaces (they belong in Business project)
-- Service implementations (they belong in Business project)
-- Any files outside Repositories/Interfaces or Repositories/Implementations folders""",
+Use int id. Include all usings.""",
                     step_label="Coder", keys=keys, model=model, q=q, step=5,
                 )
                 all_files.update(_extract_files(repo_text))
 
-            data_ext_text = await _llm(
+            # 5d: DataModule (CompositionModule)
+            data_module_text = await _llm(
                 client,
                 system="""You are a senior .NET 8 developer.
 Generate COMPLETE C# files using EXACTLY this format:
 === FILE: <path> ===
 <complete code>
 === END FILE ===
-
-CRITICAL REQUIREMENTS:
-1. Include ALL required using statements
-2. Register ONLY interfaces and implementations that were actually generated
-3. Use AddScoped for repositories
 Full implementations. No TODOs.""",
-                user=f"""Generate Data project extension files for '{project_name}.Data':
-1. {project_name}.Data/Extensions/DataServiceExtensions.cs — namespace {project_name}.Data.Extensions
-   Required usings: using Microsoft.EntityFrameworkCore; using Microsoft.Extensions.Configuration; using Microsoft.Extensions.DependencyInjection; using {project_name}.Data; using {project_name}.Data.Repositories;
-   static AddDataServices(this IServiceCollection services, IConfiguration configuration)
-   Register AppDbContext with SQL Server
-   Register repository implementations for entities: {', '.join(entities[:3])}
-   Example: services.AddScoped<I{entities[0]}Repository, {entities[0]}Repository>();
-   ONLY register repositories that were generated, do NOT add unknown interfaces""",
+                user=f"""{get_data_layer_context(project_name)}
+
+Generate DI registration:
+
+File 1: {project_name}.Data/CompositionModule/DataModule.cs
+- namespace {project_name}.Data.CompositionModule
+- static class DataModule
+- Extension method: AddDataServices(this IServiceCollection services, IConfiguration config)
+- Register: AppDbContext with UseSqlServer
+- Register: I{entities[0]}Repository -> {entities[0]}Repository (and all others: {config_list})
+- DO NOT register IBaseRepository<> as open generic - only register concrete repos
+- Return services
+
+Include usings: Microsoft.EntityFrameworkCore, Microsoft.Extensions.DependencyInjection, Microsoft.Extensions.Configuration""",
                 step_label="Coder", keys=keys, model=model, q=q, step=5,
             )
-            all_files.update(_extract_files(data_ext_text))
+            all_files.update(_extract_files(data_module_text))
             await status("Coder", f"Data project done ({len(all_files)} files so far)", 5)
             await save_incremental("5_data_layer")
 
@@ -823,78 +1023,59 @@ Generate COMPLETE C# files using EXACTLY this format:
 === FILE: <path> ===
 <complete code>
 === END FILE ===
+Full implementations. No TODOs.""",
+                    user=f"""{get_business_layer_context(project_name)}
 
-CRITICAL REQUIREMENTS:
-1. Include ALL required using statements
-2. Use extension methods for ALL DTO conversions
-3. Call ToPagedDto with ALL 4 parameters: (items, totalCount, page, pageSize)
-4. DeleteAsync calls repository.DeleteAsync(id) with Guid id, NOT entity
-5. Use entity name EXACTLY as provided
-Full business logic. No TODOs.""",
-                    user=f"""Generate Business project service files for '{entity}' in '{project_name}.Business':
+Generate service files for '{entity}' in '{project_name}.Business':
 
-CRITICAL FILE LOCATION RULES:
-- Service interface MUST be in Services/Interfaces folder
-- Service implementation MUST be in Services/Implementations folder
-- DO NOT create service files at Business project root
-- DO NOT create repository interfaces or implementations in Business project (they belong in Data project)
-- Verify full path includes folder structure
+File 1: {project_name}.Business/Contracts/I{entity}Service.cs
+- namespace {project_name}.Business.Contracts
+- using {project_name}.Business.Models;
+- public interface I{entity}Service
+- Methods: GetAllAsync(int page, int pageSize, CancellationToken ct), GetByIdAsync(int id, CancellationToken ct), CreateAsync(Create{entity} model, CancellationToken ct), UpdateAsync(int id, Update{entity} model, CancellationToken ct), DeleteAsync(int id, CancellationToken ct)
+- Returns: Paged{entity}, {entity}, {entity}, {entity}, Task
 
-1. {project_name}.Business/Services/Interfaces/I{entity}Service.cs — namespace {project_name}.Business.Services
-   CRITICAL: File MUST be inside Services/Interfaces folder
-   Required usings: using System; using System.Threading; using System.Threading.Tasks; using {project_name}.Business.DTOs;
-   Methods:
-   GetAllAsync(int page, int pageSize, CancellationToken cancellationToken) -> Task<Paged{entity}Dto>
-   GetByIdAsync(Guid id, CancellationToken cancellationToken) -> Task<{entity}Dto>
-   CreateAsync(Create{entity}Dto dto, CancellationToken cancellationToken) -> Task<{entity}Dto>
-   UpdateAsync(Guid id, Update{entity}Dto dto, CancellationToken cancellationToken) -> Task<{entity}Dto>
-   DeleteAsync(Guid id, CancellationToken cancellationToken) -> Task
+File 2: {project_name}.Business/Services/{entity}Service.cs
+- namespace {project_name}.Business.Services
+- using {project_name}.Data.Contracts;
+- using {project_name}.Business.Models;
+- using {project_name}.Business.Contracts;
+- using {project_name}.Business.Extensions;
+- public class {entity}Service : I{entity}Service
+- Constructor: I{entity}Repository repository, ILogger<{entity}Service> logger
+- Use extension methods: .ToBusinessModel(), .ToDataModel(), .ToPagedResult()
+- UpdateAsync: fetch entity, set properties directly, save. No ApplyUpdate.
+- DeleteAsync: await _repository.DeleteAsync(id, ct)
+- Throw KeyNotFoundException when not found
 
-2. {project_name}.Business/Services/Implementations/{entity}Service.cs — namespace {project_name}.Business.Services
-   CRITICAL: File MUST be inside Services/Implementations folder
-   Required usings: using System; using System.Collections.Generic; using System.Linq; using System.Threading; using System.Threading.Tasks; using Microsoft.Extensions.Logging; using {project_name}.Data.Repositories; using {project_name}.Business.DTOs; using {project_name}.Business.Extensions;
-   Constructor: I{entity}Repository repository, ILogger<{entity}Service> logger
-   Use {entity}MappingExtensions extension methods for all conversions:
-   - entity.ToDto()
-   - dto.ToEntity()
-   - entity.ApplyUpdate(dto)
-   - items.ToPagedDto(totalCount, page, pageSize) — MUST pass all 4 parameters
-   DeleteAsync implementation: await _repository.DeleteAsync(id, cancellationToken); — pass Guid id, NOT entity
-   Throw KeyNotFoundException when entity not found
-   Log every operation with structured logging
-
-DO NOT GENERATE:
-- Repository interfaces (they belong in Data project)
-- Repository implementations (they belong in Data project)
-- Any files outside Services/Interfaces or Services/Implementations folders""",
+Generate BOTH files. Include ALL usings.""",
                     step_label="Coder", keys=keys, model=model, q=q, step=6,
                 )
                 all_files.update(_extract_files(svc_text))
 
-            business_ext_text = await _llm(
+            # BusinessModule
+            business_module_text = await _llm(
                 client,
                 system="""You are a senior .NET 8 developer.
 Generate COMPLETE C# files using EXACTLY this format:
 === FILE: <path> ===
 <complete code>
 === END FILE ===
-
-CRITICAL REQUIREMENTS:
-1. Include ALL required using statements
-2. Register ONLY services that were actually generated
-3. Use AddScoped for services
 Full implementations. No TODOs.""",
-                user=f"""Generate Business project extension files for '{project_name}.Business':
-1. {project_name}.Business/Extensions/BusinessServiceExtensions.cs — namespace {project_name}.Business.Extensions
-   Required usings: using Microsoft.Extensions.Configuration; using Microsoft.Extensions.DependencyInjection; using {project_name}.Data.Extensions; using {project_name}.Business.Services;
-   static AddBusinessServices(this IServiceCollection services, IConfiguration configuration)
-   call services.AddDataServices(configuration)
-   register all service implementations for entities: {', '.join(entities[:3])}
-   Example: services.AddScoped<I{entities[0]}Service, {entities[0]}Service>();
-   ONLY register services that were generated, do NOT add unknown interfaces""",
+                user=f"""{get_business_layer_context(project_name)}
+
+File 1: {project_name}.Business/CompositionModule/BusinessModule.cs
+- namespace {project_name}.Business.CompositionModule
+- static class BusinessModule
+- Extension method: AddBusinessServices(this IServiceCollection services, IConfiguration config)
+- FIRST call: services.AddDataServices(config)  // from {project_name}.Data.CompositionModule
+- THEN register each service: {', '.join(f'services.AddScoped<I{e}Service, {e}Service>()' for e in entities[:3])}
+- Return services
+
+Include usings: Microsoft.Extensions.DependencyInjection, Microsoft.Extensions.Configuration, {project_name}.Data.CompositionModule, {project_name}.Business.Contracts, {project_name}.Business.Services""",
                 step_label="Coder", keys=keys, model=model, q=q, step=6,
             )
-            all_files.update(_extract_files(business_ext_text))
+            all_files.update(_extract_files(business_module_text))
             await status("Coder", f"Business services done ({len(all_files)} files so far)", 6)
             await save_incremental("6_business_layer")
 
@@ -915,36 +1096,16 @@ Generate COMPLETE C# files using EXACTLY this format:
 === FILE: <path> ===
 <complete code>
 === END FILE ===
-Production-ready. No TODOs. Full XML doc comments.""",
-                    user=f"""Generate controller for '{entity}' in '{project_name}.Presentation':
+Production-ready. No TODOs.""",
+                    user=f"""{get_presentation_layer_context(project_name)}
 
-CRITICAL FILE LOCATION RULES:
-- Controller MUST be in Controllers folder
-- DO NOT create controller at Presentation project root
-- Verify full path: {project_name}.Presentation/Controllers/{ctrl}Controller.cs
+Generate controller for '{entity}' in '{project_name}.Presentation':
+{project_name}.Presentation/Controllers/{ctrl}Controller.cs
 
-{project_name}.Presentation/Controllers/{ctrl}Controller.cs — namespace {project_name}.Presentation.Controllers
-- CRITICAL: File MUST be inside Controllers folder
-- [ApiController], [Route("api/[controller]")]
-- Constructor: I{entity}Service service, ILogger<{ctrl}Controller> logger
-- GET / — GetAllAsync([FromQuery] int page=1, [FromQuery] int pageSize=10, CancellationToken cancellationToken)
-  [AllowAnonymous], returns Paged{entity}Response
-  Use: var result = await _service.GetAllAsync(page, pageSize, cancellationToken); return Ok(result.ToPagedResponse());
-- GET /{{id}} — GetByIdAsync(Guid id, CancellationToken cancellationToken)
-  [AllowAnonymous], returns {entity}Response
-  Use: var result = await _service.GetByIdAsync(id, cancellationToken); return Ok(result.ToResponse());
-- POST / — CreateAsync([FromBody] Create{entity}Request request, CancellationToken cancellationToken)
-  [Authorize(Roles="Admin,User")], returns 201 Created with {entity}Response
-  Use: var dto = request.ToCreateDto(); var result = await _service.CreateAsync(dto, cancellationToken); return CreatedAtAction(...);
-- PUT /{{id}} — UpdateAsync(Guid id, [FromBody] Update{entity}Request request, CancellationToken cancellationToken)
-  [Authorize(Roles="Admin,User")], returns {entity}Response
-  Use: var dto = request.ToUpdateDto(); var result = await _service.UpdateAsync(id, dto, cancellationToken); return Ok(result.ToResponse());
-- DELETE /{{id}} — DeleteAsync(Guid id, CancellationToken cancellationToken)
-  [Authorize(Roles="Admin")], returns 204 NoContent
-- Catch KeyNotFoundException -> return NotFound()
-- ProducesResponseType for 200,201,204,400,401,403,404,500
-
-DO NOT create controller files outside Controllers folder""",
+Follow the Controller pattern from architecture rules above.
+Use int id. Use .ToBusinessModel() for input, .ToApiModel() for output, .ToPagedApiModel() for paged.
+I{entity}Service from Business.Contracts.
+Catch KeyNotFoundException -> NotFound().""",
                     step_label="Coder", keys=keys, model=model, q=q, step=7,
                 )
                 all_files.update(_extract_files(ctrl_text))
@@ -961,31 +1122,44 @@ Generate COMPLETE C# files using EXACTLY this format:
 <complete code>
 === END FILE ===
 Full production-ready Program.cs. No TODOs.""",
-                user=f"""{DOTNET_STANDARDS}
+                user=f"""{DOTNET_PACKAGES}
+{get_presentation_layer_context(project_name)}
+
+CRITICAL BUILD RULES:
+- Include ALL using statements (Microsoft.AspNetCore.RateLimiting, System.Threading.RateLimiting, etc.)
+- Do NOT call extension methods that don't exist
+- Do NOT create recursive extension methods
+- Use app.UseMiddleware<T>() or define extension methods in a MiddlewareExtensions static class
+- builder.Host.UseSerilog() for Serilog integration
+
 Generate {project_name}.Presentation/Program.cs — namespace {project_name}.Presentation:
 
 Must call in order:
   builder.Host.UseSerilog()
-  builder.Services.AddBusinessServices(builder.Configuration)   // from {project_name}.Business
+  builder.Services.AddBusinessServices(builder.Configuration)   // from {project_name}.Business.CompositionModule
   builder.Services.AddControllers()
   builder.Services.AddEndpointsApiExplorer()
-  builder.Services.AddSwaggerGen() with JWT bearer security
-  builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme).AddJwtBearer()
-  builder.Services.AddAuthorization() with Admin/User/ReadOnly policies
-  builder.Services.AddRateLimiter()
+  builder.Services.AddSwaggerGen()
   builder.Services.AddHealthChecks()
-  builder.Services.AddSingleton<ITokenService, JwtTokenService>()
 
-  app.UseExceptionHandlingMiddleware()
-  app.UseRequestLoggingMiddleware()
+  // TODO: Add authentication when ready
+  // builder.Services.AddAuthentication(...).AddJwtBearer(...)
+  // builder.Services.AddAuthorization()
+
+  app.UseExceptionHandling()   // from {project_name}.Presentation.Middleware.MiddlewareExtensions
+  app.UseRequestLogging()      // from {project_name}.Presentation.Middleware.MiddlewareExtensions
   app.UseHttpsRedirection()
-  app.UseAuthentication()
-  app.UseAuthorization()
-  app.UseRateLimiter()
   app.UseSwagger()
   app.UseSwaggerUI()
   app.MapControllers()
   app.MapHealthChecks("/health")
+
+IMPORTANT:
+- UseExceptionHandling and UseRequestLogging are defined in {project_name}.Presentation.Middleware.MiddlewareExtensions
+- Add using {project_name}.Presentation.Middleware;
+- Add using {project_name}.Business.CompositionModule;
+- Do NOT add authentication/authorization code - just TODO comments for now
+- Do NOT reference types that don't exist (ITokenService, JwtSettings etc are stubs only)
 
 Entities: {', '.join(entities)}
 Controllers: {', '.join(controllers)}""",
@@ -1085,7 +1259,19 @@ Full implementations using WebApplicationFactory. No TODOs.""",
                 package_step = review_file_step + 1
 
             # Package
-            await status("FinalReviewer", f"Step {package_step}/{total_steps} — Packaging all files...", package_step)
+            await status("FinalReviewer", f"Step {package_step}/{total_steps} — Validating and packaging...", package_step)
+
+            # Static build validation — check cross-file consistency
+            validation_errors = _validate_build(all_files, project_name)
+            if validation_errors:
+                error_summary = "; ".join(validation_errors[:10])
+                await q.put(_sse("agent_message", {
+                    "agent": "FinalReviewer",
+                    "preview": f"Build validation found {len(validation_errors)} issue(s): {error_summary[:200]}",
+                    "step": package_step,
+                }))
+                logger.warning("Build validation issues: %s", validation_errors)
+
             src_files  = [f for f in all_files if not f.startswith(f"{project_name}.Tests")]
             test_files = [f for f in all_files if f.startswith(f"{project_name}.Tests")]
             await status("FinalReviewer", f"Complete — {len(src_files)} source + {len(test_files)} test files", package_step)
