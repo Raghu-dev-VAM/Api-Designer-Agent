@@ -1,60 +1,35 @@
-name: Build, Scan & Deploy
+name: Build & Deploy
 
 on:
   push:
     branches:
       - main
-
+      
 env:
   CI: false
 
 jobs:
   build:
-    name: Build and CodeQL Scan
+    name: Build
     runs-on: ubuntu-latest
 
-    permissions:
-      actions: read
-      contents: read
-      security-events: write
-
-    strategy:
-      fail-fast: false
-      matrix:
-        language: [ 'javascript-typescript' ]
-
     steps:
-      # Checkout repository
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v2
 
-      # Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # Initialize CodeQL
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: ${{ matrix.language }}
-
-      # Install dependencies
       - name: Install dependencies
         working-directory: api-designer-agent-react
         run: npm install
 
-      # Build project
       - name: Build project
         working-directory: api-designer-agent-react
         run: npm run build
 
-      # Perform CodeQL Analysis
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4
-
-      # Upload production-ready build files
       - name: Upload production-ready build files
         uses: actions/upload-artifact@v4
         with:
@@ -65,22 +40,15 @@ jobs:
     name: Deploy
     needs: build
     runs-on: ubuntu-latest
-
     if: github.ref == 'refs/heads/main'
 
     steps:
-      # Download artifact
       - name: Download artifact
         uses: actions/download-artifact@v4
         with:
           name: production-files
           path: ./build
 
-      # Verify downloaded files
-      - name: Verify files
-        run: ls -la ./build
-
-      # Deploy to GitHub Pages
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
