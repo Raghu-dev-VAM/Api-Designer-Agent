@@ -23,6 +23,7 @@ jobs:
           node-version: 16
 
       - name: Install dependencies
+        working-directory: api-designer-agent-react
         run: npm install
 
       - name: Build project
