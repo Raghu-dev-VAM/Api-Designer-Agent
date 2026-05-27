@@ -21,12 +21,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: [ 'javascript-typescript' ]
+        language: [ 'javascript-typescript', 'python' ]
 
     steps:
       # Checkout repository
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      # -------------------------
+      # FRONTEND SETUP
+      # -------------------------
 
       # Setup Node.js
       - name: Setup Node.js
@@ -34,53 +38,96 @@ jobs:
         with:
           node-version: 22
 
-      # Initialize CodeQL
+      # Install frontend dependencies
+      - name: Install frontend dependencies
+        working-directory: api-designer-agent-react
+        run: npm install
+
+      # Build frontend
+      - name: Build frontend
+        working-directory: api-designer-agent-react
+        run: npm run build
+
+      # -------------------------
+      # BACKEND SETUP (FastAPI)
+      # -------------------------
+
+      # Setup Python
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.14.5'
+
+      # Install backend dependencies
+      - name: Install backend dependencies
+        working-directory: ApiDesignerAgent.Api/ApiDesignerAgent_FastAPI
+        run: |
+          python -m pip install --upgrade pip
+
+          if [ -f requirements.txt ]; then
+            pip install -r requirements.txt
+          fi
+
+      # Optional: Run backend syntax check
+      - name: Verify backend
+        working-directory: ApiDesignerAgent.Api/ApiDesignerAgent_FastAPI
+        run: |
+          python -m compileall .
+
+      # -------------------------
+      # CODEQL INIT
+      # -------------------------
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v4
         with:
           languages: ${{ matrix.language }}
 
-      # Install dependencies
-      - name: Install dependencies
-        working-directory: api-designer-agent-react
-        run: npm install
+      # -------------------------
+      # CODEQL ANALYSIS
+      # -------------------------
 
-      # Build project
-      - name: Build project
-        working-directory: api-designer-agent-react
-        run: npm run build
-
-      # Perform CodeQL Analysis
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
 
-      # Upload production-ready build files
-      - name: Upload production-ready build files
+      # -------------------------
+      # UPLOAD ARTIFACTS
+      # -------------------------
+
+      # Upload frontend build files
+      - name: Upload frontend production files
         uses: actions/upload-artifact@v4
         with:
           name: production-files
           path: api-designer-agent-react/dist
 
+      # Upload backend files
+      - name: Upload backend files
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-files
+          path: ApiDesignerAgent.Api/ApiDesignerAgent_FastAPI
+
   deploy:
-    name: Deploy
+    name: Deploy Frontend
     needs: build
     runs-on: ubuntu-latest
 
     if: github.ref == 'refs/heads/main'
 
     steps:
-      # Download artifact
-      - name: Download artifact
+      # Download frontend artifact
+      - name: Download frontend artifact
         uses: actions/download-artifact@v4
         with:
           name: production-files
           path: ./build
 
-      # Verify downloaded files
-      - name: Verify files
+      # Verify frontend files
+      - name: Verify frontend files
         run: ls -la ./build
 
-      # Deploy to GitHub Pages
+      # Deploy frontend to GitHub Pages
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
