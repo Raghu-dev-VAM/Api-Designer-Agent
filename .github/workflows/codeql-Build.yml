@@ -24,41 +24,48 @@ jobs:
         language: [ 'javascript-typescript', 'python' ]
 
     steps:
-      # Checkout repository
+      # -------------------------
+      # CHECKOUT REPOSITORY
+      # -------------------------
+
       - name: Checkout repo
         uses: actions/checkout@v4
+
+      # -------------------------
+      # INITIALIZE CODEQL
+      # -------------------------
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
 
       # -------------------------
       # FRONTEND SETUP
       # -------------------------
 
-      # Setup Node.js
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # Install frontend dependencies
       - name: Install frontend dependencies
         working-directory: api-designer-agent-react
         run: npm install
 
-      # Build frontend
       - name: Build frontend
         working-directory: api-designer-agent-react
         run: npm run build
 
       # -------------------------
-      # BACKEND SETUP (FastAPI)
+      # BACKEND SETUP (FASTAPI)
       # -------------------------
 
-      # Setup Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.14.5'
+          python-version: '3.12'
 
-      # Install backend dependencies
       - name: Install backend dependencies
         working-directory: ApiDesignerAgent.Api/ApiDesignerAgent_FastAPI
         run: |
@@ -68,40 +75,72 @@ jobs:
             pip install -r requirements.txt
           fi
 
-      # Optional: Run backend syntax check
       - name: Verify backend
         working-directory: ApiDesignerAgent.Api/ApiDesignerAgent_FastAPI
         run: |
           python -m compileall .
 
       # -------------------------
-      # CODEQL INIT
-      # -------------------------
-
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4
-        with:
-          languages: ${{ matrix.language }}
-
-      # -------------------------
-      # CODEQL ANALYSIS
+      # PERFORM CODEQL ANALYSIS
       # -------------------------
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v4
 
       # -------------------------
-      # UPLOAD ARTIFACTS
+      # SEND EMAIL NOTIFICATION
       # -------------------------
 
-      # Upload frontend build files
+      - name: Send email notification
+        if: success()
+        uses: dawidd6/action-send-mail@v6
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+
+          subject: "✅ CodeQL Scan Completed - ${{ github.repository }}"
+
+          to: shitalgurav@gmail.com, Shital.Gurav@valuemomentum.com
+
+          from: GitHub Actions <${{ secrets.MAIL_USERNAME }}>
+
+          body: |
+            Hello,
+
+            The CodeQL scan for ${{ github.repository }} has finished successfully.
+
+            Repository: ${{ github.repository }}
+            Branch: ${{ github.ref_name }}
+            Workflow: ${{ github.workflow }}
+            Run Number: ${{ github.run_number }}
+
+            View Workflow Run:
+            https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+            View Code Scanning Results:
+            https://github.com/${{ github.repository }}/security/code-scanning
+
+            Regards,
+            GitHub Actions
+
+      # -------------------------
+      # UPLOAD FRONTEND ARTIFACTS
+      # -------------------------
+
       - name: Upload frontend production files
         uses: actions/upload-artifact@v4
         with:
           name: production-files
           path: api-designer-agent-react/dist
 
-      # Upload backend files
+      # -------------------------
+      # UPLOAD BACKEND ARTIFACTS
+      # -------------------------
+
       - name: Upload backend files
         uses: actions/upload-artifact@v4
         with:
@@ -116,18 +155,27 @@ jobs:
     if: github.ref == 'refs/heads/main'
 
     steps:
-      # Download frontend artifact
+      # -------------------------
+      # DOWNLOAD FRONTEND ARTIFACT
+      # -------------------------
+
       - name: Download frontend artifact
         uses: actions/download-artifact@v4
         with:
           name: production-files
           path: ./build
 
-      # Verify frontend files
+      # -------------------------
+      # VERIFY FILES
+      # -------------------------
+
       - name: Verify frontend files
         run: ls -la ./build
 
-      # Deploy frontend to GitHub Pages
+      # -------------------------
+      # DEPLOY TO GITHUB PAGES
+      # -------------------------
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v3
         with:
