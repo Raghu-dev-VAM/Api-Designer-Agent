@@ -104,7 +104,7 @@ jobs:
 
           subject: "✅ CodeQL Scan Completed - ${{ github.repository }}"
 
-          to: shitalgurav@gmail.com, Shital.Gurav@valuemomentum.com
+          to: guravshital11@gmail.com
 
           from: GitHub Actions <${{ secrets.MAIL_USERNAME }}>
 
