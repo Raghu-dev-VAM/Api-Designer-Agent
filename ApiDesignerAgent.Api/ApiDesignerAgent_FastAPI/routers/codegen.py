@@ -281,6 +281,41 @@ def _generate_tests_csproj(project_name: str) -> str:
 </Project>
 """
 
+# -- Deterministic launchSettings.json generator ------------------------------
+def _generate_launch_settings(project_name: str) -> str:
+    return json.dumps({
+        "$schema": "http://json.schemastore.org/launchsettings.json",
+        "profiles": {
+            project_name: {
+                "commandName": "Project",
+                "dotnetRunMessages": True,
+                "launchBrowser": True,
+                "launchUrl": "swagger",
+                "applicationUrl": "https://localhost:7001;http://localhost:5001",
+                "environmentVariables": {
+                    "ASPNETCORE_ENVIRONMENT": "Development"
+                }
+            },
+            "IIS Express": {
+                "commandName": "IISExpress",
+                "launchBrowser": True,
+                "launchUrl": "swagger",
+                "environmentVariables": {
+                    "ASPNETCORE_ENVIRONMENT": "Development"
+                }
+            }
+        },
+        "iisSettings": {
+            "windowsAuthentication": False,
+            "anonymousAuthentication": True,
+            "iisExpress": {
+                "applicationUrl": "http://localhost:5001",
+                "sslPort": 44301
+            }
+        }
+    }, indent=2)
+
+
 # -- Rate limiter for LLM calls ------------------------------------------------
 import time
 
@@ -426,6 +461,13 @@ FIX THESE ISSUES ONLY:
 10. Recursive extension methods — fix to call framework method instead
 11. Calling extension methods that don't exist — remove or implement them
 12. Missing middleware extension methods — add them or use app.UseMiddleware<T>()
+13. CancellationToken without = default in controller methods — add = default
+14. Controller using wrong model type (e.g. {Model} instead of Create{Model}/Update{Model}) — fix to use Create{Model} for POST, Update{Model} for PUT
+15. Service calling non-existent methods like GetCountAsync() — repo returns (Items, TotalCount) tuple directly
+16. Extension mapping properties that don't exist on target (e.g. CreatedAt on Create/Update models) — remove those mappings
+17. Program.cs chaining incompatible return types (IMvcBuilder vs IServiceCollection) — make each call a separate statement
+18. Validators missing using for model namespace — add using {Project}.Presentation.Models;
+19. Service UpdateAsync setting properties that don't exist on entity (e.g. MiddleName, Email when entity only has Name, Address) — fix to match actual entity properties
 
 CRITICAL USING DIRECTIVES (add if types are used):
 - Microsoft.EntityFrameworkCore (for DbContext, DbSet, UseSqlServer)
@@ -437,6 +479,7 @@ CRITICAL USING DIRECTIVES (add if types are used):
 - Microsoft.AspNetCore.RateLimiting (for AddRateLimiter)
 - Microsoft.AspNetCore.Mvc (for ProblemDetails, ControllerBase)
 - System.Text (for Encoding)
+- FluentValidation (for AbstractValidator)
 
 DO NOT CHANGE:
 - Class names (keep them exactly as they are)
@@ -718,6 +761,7 @@ No explanation. JSON only.""",
             all_files[f"{project_name}.Data/{project_name}.Data.csproj"] = _generate_data_csproj(project_name)
             all_files[f"{project_name}.Business/{project_name}.Business.csproj"] = _generate_business_csproj(project_name)
             all_files[f"{project_name}.Presentation/{project_name}.Presentation.csproj"] = _generate_presentation_csproj(project_name)
+            all_files[f"{project_name}.Presentation/Properties/launchSettings.json"] = _generate_launch_settings(project_name)
             if include_tests:
                 all_files[f"{project_name}.Tests/{project_name}.Tests.csproj"] = _generate_tests_csproj(project_name)
             await status("Architect", f"Solution structure created ({len(all_files)} files)", 1)
@@ -846,6 +890,12 @@ Generate ALL 5 files.""",
                 all_files.update(_extract_files(biz_model_text))
 
                 # 4c: Presentation models + extensions + validators - MUST match Data model properties
+                # Also pass the Business Create/Update models to ensure Presentation matches exactly
+                biz_create_key = f"{project_name}.Business/Models/Create{entity}.cs"
+                biz_update_key = f"{project_name}.Business/Models/Update{entity}.cs"
+                biz_create_content = all_files.get(biz_create_key, "// not generated")
+                biz_update_content = all_files.get(biz_update_key, "// not generated")
+
                 pres_model_text = await _llm(
                     client,
                     system="""You are a senior .NET 8 developer.
@@ -856,23 +906,38 @@ Generate COMPLETE C# files using EXACTLY this format:
 Full implementations. Map ALL properties explicitly. No placeholder comments. Initialize strings = string.Empty.""",
                     user=f"""{get_presentation_layer_context(project_name)}
 
-REFERENCE - Data model (Presentation MUST have same properties):
+REFERENCE - Data model (Presentation read model MUST have same properties):
 {data_model_content}
+
+REFERENCE - Business Create model (Presentation Create MUST have IDENTICAL properties):
+{biz_create_content}
+
+REFERENCE - Business Update model (Presentation Update MUST have IDENTICAL properties):
+{biz_update_content}
 
 Generate Presentation layer for '{entity}' in '{project_name}.Presentation':
 
-File 1: {project_name}.Presentation/Models/{entity}.cs - COPY all properties from Data model
-File 2: {project_name}.Presentation/Models/Create{entity}.cs - all props EXCEPT Id, CreatedAt, UpdatedAt
-File 3: {project_name}.Presentation/Models/Update{entity}.cs - same as Create. MUST generate.
+File 1: {project_name}.Presentation/Models/{entity}.cs - COPY all properties from Data model (Id, all fields, CreatedAt, UpdatedAt)
+File 2: {project_name}.Presentation/Models/Create{entity}.cs - MUST have EXACTLY same properties as Business Create model above. NO Id, NO CreatedAt, NO UpdatedAt.
+File 3: {project_name}.Presentation/Models/Update{entity}.cs - MUST have EXACTLY same properties as Business Update model above. NO Id, NO CreatedAt, NO UpdatedAt.
 File 4: {project_name}.Presentation/Models/Paged{entity}.cs - List<{entity}> Items, int TotalCount, Page, PageSize
 File 5: {project_name}.Presentation/Extensions/{entity}Extensions.cs
   - using {project_name}.Business.Models; using {project_name}.Presentation.Models;
-  - ToBusinessModel(this Presentation.Models.Create{entity}) returns Business.Models.Create{entity}
-  - ToBusinessModel(this Presentation.Models.Update{entity}) returns Business.Models.Update{entity}
-  - ToApiModel(this Business.Models.{entity}) returns Presentation.Models.{entity}
-  - ToPagedApiModel(this Business.Models.Paged{entity}) returns Presentation.Models.Paged{entity}
-File 6: {project_name}.Presentation/Validators/Create{entity}Validator.cs - AbstractValidator<Create{entity}>
-File 7: {project_name}.Presentation/Validators/Update{entity}Validator.cs - AbstractValidator<Update{entity}>
+  - ToBusinessModel(this Presentation.Models.Create{entity} m) returns Business.Models.Create{entity} — map ONLY properties that exist on Business Create model
+  - ToBusinessModel(this Presentation.Models.Update{entity} m) returns Business.Models.Update{entity} — map ONLY properties that exist on Business Update model
+  - ToApiModel(this Business.Models.{entity} m) returns Presentation.Models.{entity} — map ALL properties including Id, CreatedAt, UpdatedAt
+  - ToPagedApiModel(this Business.Models.Paged{entity} m) returns Presentation.Models.Paged{entity}
+  - CRITICAL: Do NOT map CreatedAt/UpdatedAt in ToBusinessModel for Create/Update — those properties do NOT exist on Create/Update models
+File 6: {project_name}.Presentation/Validators/Create{entity}Validator.cs
+  - using FluentValidation;
+  - using {project_name}.Presentation.Models;
+  - namespace {project_name}.Presentation.Validators;
+  - public class Create{entity}Validator : AbstractValidator<Create{entity}>
+File 7: {project_name}.Presentation/Validators/Update{entity}Validator.cs
+  - using FluentValidation;
+  - using {project_name}.Presentation.Models;
+  - namespace {project_name}.Presentation.Validators;
+  - public class Update{entity}Validator : AbstractValidator<Update{entity}>
 
 Generate ALL 7 files.""",
                     step_label="Coder", keys=keys, model=model, q=q, step=4,
@@ -1016,6 +1081,12 @@ Include usings: Microsoft.EntityFrameworkCore, Microsoft.Extensions.DependencyIn
             # Step 6: Business services
             await status("Coder", f"Step 6/{total_steps} — Generating business services (Business project)...", 6)
             for entity in entities[:3]:
+                # Pass the Data model and Business Update model so LLM knows exact properties
+                data_model_key = f"{project_name}.Data/Models/{entity}.cs"
+                data_model_content = all_files.get(data_model_key, "// not generated")
+                biz_update_key = f"{project_name}.Business/Models/Update{entity}.cs"
+                biz_update_content = all_files.get(biz_update_key, "// not generated")
+
                 svc_text = await _llm(
                     client,
                     system="""You are a senior .NET 8 developer.
@@ -1026,14 +1097,20 @@ Generate COMPLETE C# files using EXACTLY this format:
 Full implementations. No TODOs.""",
                     user=f"""{get_business_layer_context(project_name)}
 
+REFERENCE - Data entity (these are the ONLY properties that exist):
+{data_model_content}
+
+REFERENCE - Update model (use ONLY these properties in UpdateAsync):
+{biz_update_content}
+
 Generate service files for '{entity}' in '{project_name}.Business':
 
 File 1: {project_name}.Business/Contracts/I{entity}Service.cs
 - namespace {project_name}.Business.Contracts
 - using {project_name}.Business.Models;
 - public interface I{entity}Service
-- Methods: GetAllAsync(int page, int pageSize, CancellationToken ct), GetByIdAsync(int id, CancellationToken ct), CreateAsync(Create{entity} model, CancellationToken ct), UpdateAsync(int id, Update{entity} model, CancellationToken ct), DeleteAsync(int id, CancellationToken ct)
-- Returns: Paged{entity}, {entity}, {entity}, {entity}, Task
+- Methods: GetAllAsync(int page, int pageSize, CancellationToken ct = default), GetByIdAsync(int id, CancellationToken ct = default), CreateAsync(Create{entity} model, CancellationToken ct = default), UpdateAsync(int id, Update{entity} model, CancellationToken ct = default), DeleteAsync(int id, CancellationToken ct = default)
+- Returns: Task<Paged{entity}>, Task<{entity}>, Task<{entity}>, Task<{entity}>, Task
 
 File 2: {project_name}.Business/Services/{entity}Service.cs
 - namespace {project_name}.Business.Services
@@ -1043,10 +1120,13 @@ File 2: {project_name}.Business/Services/{entity}Service.cs
 - using {project_name}.Business.Extensions;
 - public class {entity}Service : I{entity}Service
 - Constructor: I{entity}Repository repository, ILogger<{entity}Service> logger
-- Use extension methods: .ToBusinessModel(), .ToDataModel(), .ToPagedResult()
-- UpdateAsync: fetch entity, set properties directly, save. No ApplyUpdate.
-- DeleteAsync: await _repository.DeleteAsync(id, ct)
-- Throw KeyNotFoundException when not found
+- GetAllAsync: var result = await _repository.GetAllAsync(page, pageSize, ct); return result.ToPagedResult(page, pageSize); — repo returns (IEnumerable<T> Items, int TotalCount) tuple directly, do NOT call .GetCountAsync()
+- CreateAsync: var entity = model.ToDataModel(); var created = await _repository.CreateAsync(entity, ct); return created.ToBusinessModel();
+- UpdateAsync: fetch entity via GetByIdAsync, then set ONLY the properties from Update model above (match property names exactly), set entity.UpdatedAt = DateTime.UtcNow, then await _repository.UpdateAsync(entity, ct) and return .ToBusinessModel()
+- DeleteAsync: if (!await _repository.ExistsAsync(id, ct)) throw KeyNotFoundException; await _repository.DeleteAsync(id, ct);
+- Throw KeyNotFoundException when entity not found
+
+CRITICAL: The repository GetAllAsync returns a TUPLE (IEnumerable<T> Items, int TotalCount). Do NOT call any GetCountAsync() method — it does not exist.
 
 Generate BOTH files. Include ALL usings.""",
                     step_label="Coder", keys=keys, model=model, q=q, step=6,
@@ -1089,6 +1169,12 @@ Include usings: Microsoft.Extensions.DependencyInjection, Microsoft.Extensions.C
                 valid_controller_entity_pairs = [("Resource", "Resource")]
             
             for ctrl, entity in valid_controller_entity_pairs:
+                # Pass the Presentation Create/Update models so LLM uses correct types
+                pres_create_key = f"{project_name}.Presentation/Models/Create{entity}.cs"
+                pres_update_key = f"{project_name}.Presentation/Models/Update{entity}.cs"
+                pres_create_content = all_files.get(pres_create_key, "// not generated")
+                pres_update_content = all_files.get(pres_update_key, "// not generated")
+
                 ctrl_text = await _llm(
                     client,
                     system="""You are a senior .NET 8 Web API developer.
@@ -1099,13 +1185,31 @@ Generate COMPLETE C# files using EXACTLY this format:
 Production-ready. No TODOs.""",
                     user=f"""{get_presentation_layer_context(project_name)}
 
+REFERENCE - These are the EXACT model types to use in the controller:
+Create model (use in [HttpPost] [FromBody] parameter):
+{pres_create_content}
+
+Update model (use in [HttpPut] [FromBody] parameter):
+{pres_update_content}
+
 Generate controller for '{entity}' in '{project_name}.Presentation':
 {project_name}.Presentation/Controllers/{ctrl}Controller.cs
 
-Follow the Controller pattern from architecture rules above.
-Use int id. Use .ToBusinessModel() for input, .ToApiModel() for output, .ToPagedApiModel() for paged.
-I{entity}Service from Business.Contracts.
-Catch KeyNotFoundException -> NotFound().""",
+RULES:
+- using {project_name}.Presentation.Models;
+- using {project_name}.Presentation.Extensions;
+- using {project_name}.Business.Contracts;
+- [ApiController] [Route("api/[controller]")]
+- Constructor: I{entity}Service service, ILogger<{ctrl}Controller> logger
+- [HttpGet] GetAllAsync([FromQuery] int page = 1, [FromQuery] int pageSize = 10, CancellationToken ct = default)
+- [HttpGet("{{id}}")] GetByIdAsync(int id, CancellationToken ct = default)
+- [HttpPost] CreateAsync([FromBody] Create{entity} model, CancellationToken ct = default) — use Create{entity} NOT {entity}
+- [HttpPut("{{id}}")] UpdateAsync(int id, [FromBody] Update{entity} model, CancellationToken ct = default) — use Update{entity} NOT {entity}
+- [HttpDelete("{{id}}")] DeleteAsync(int id, CancellationToken ct = default)
+- Use .ToBusinessModel() for Create/Update input, .ToApiModel() for single output, .ToPagedApiModel() for paged output
+- CancellationToken MUST have = default since it comes after optional params
+- NO [Authorize] attributes
+- Return Ok(), CreatedAtAction(), NoContent() as appropriate""",
                     step_label="Coder", keys=keys, model=model, q=q, step=7,
                 )
                 all_files.update(_extract_files(ctrl_text))
@@ -1114,6 +1218,8 @@ Catch KeyNotFoundException -> NotFound().""",
 
             # Step 8: Program.cs (Presentation project)
             await status("Coder", f"Step 8/{total_steps} — Generating Program.cs (Presentation project)...", 8)
+            # Get the first entity's validator class name for AddValidatorsFromAssemblyContaining
+            first_entity = entities[0] if entities else "Resource"
             prog_text = await _llm(
                 client,
                 system="""You are a senior .NET 8 developer.
@@ -1126,43 +1232,58 @@ Full production-ready Program.cs. No TODOs.""",
 {get_presentation_layer_context(project_name)}
 
 CRITICAL BUILD RULES:
-- Include ALL using statements (Microsoft.AspNetCore.RateLimiting, System.Threading.RateLimiting, etc.)
+- Include ALL using statements
 - Do NOT call extension methods that don't exist
 - Do NOT create recursive extension methods
-- Use app.UseMiddleware<T>() or define extension methods in a MiddlewareExtensions static class
 - builder.Host.UseSerilog() for Serilog integration
+- EVERY method call on builder.Services returns IServiceCollection — do NOT chain with IMvcBuilder methods
+- AddControllers() returns IMvcBuilder. Do NOT chain AddEndpointsApiExplorer() after it. Call separately on builder.Services.
+- app.UseSwagger(), app.UseSwaggerUI(), app.MapControllers(), app.MapHealthChecks() are all called on app (WebApplication), NOT chained from IApplicationBuilder
 
-Generate {project_name}.Presentation/Program.cs — namespace {project_name}.Presentation:
+Generate {project_name}.Presentation/Program.cs:
 
-Must call in order:
-  builder.Host.UseSerilog()
-  builder.Services.AddBusinessServices(builder.Configuration)   // from {project_name}.Business.CompositionModule
-  builder.Services.AddControllers()
-  builder.Services.AddEndpointsApiExplorer()
-  builder.Services.AddSwaggerGen()
-  builder.Services.AddHealthChecks()
+EXACT PATTERN TO FOLLOW (do not deviate):
+```
+using Serilog;
+using FluentValidation;
+using FluentValidation.AspNetCore;
+using {project_name}.Business.CompositionModule;
+using {project_name}.Presentation.Middleware;
+using {project_name}.Presentation.Validators;
 
-  // TODO: Add authentication when ready
-  // builder.Services.AddAuthentication(...).AddJwtBearer(...)
-  // builder.Services.AddAuthorization()
+var builder = WebApplication.CreateBuilder(args);
 
-  app.UseExceptionHandling()   // from {project_name}.Presentation.Middleware.MiddlewareExtensions
-  app.UseRequestLogging()      // from {project_name}.Presentation.Middleware.MiddlewareExtensions
-  app.UseHttpsRedirection()
-  app.UseSwagger()
-  app.UseSwaggerUI()
-  app.MapControllers()
-  app.MapHealthChecks("/health")
+builder.Host.UseSerilog((ctx, cfg) => cfg.ReadFrom.Configuration(ctx.Configuration));
+
+builder.Services.AddBusinessServices(builder.Configuration);
+builder.Services.AddControllers();
+builder.Services.AddFluentValidationAutoValidation();
+builder.Services.AddValidatorsFromAssemblyContaining<Create{first_entity}Validator>();
+builder.Services.AddEndpointsApiExplorer();
+builder.Services.AddSwaggerGen();
+builder.Services.AddHealthChecks();
+
+var app = builder.Build();
+
+app.UseExceptionHandling();
+app.UseRequestLogging();
+app.UseHttpsRedirection();
+app.UseSwagger();
+app.UseSwaggerUI();
+app.MapControllers();
+app.MapHealthChecks("/health");
+
+app.Run();
+```
 
 IMPORTANT:
 - UseExceptionHandling and UseRequestLogging are defined in {project_name}.Presentation.Middleware.MiddlewareExtensions
-- Add using {project_name}.Presentation.Middleware;
-- Add using {project_name}.Business.CompositionModule;
-- Do NOT add authentication/authorization code - just TODO comments for now
-- Do NOT reference types that don't exist (ITokenService, JwtSettings etc are stubs only)
+- Each builder.Services.XYZ() call is a SEPARATE statement — never chain them
+- Each app.XYZ() call is a SEPARATE statement — never chain them
+- Do NOT add authentication/authorization code
+- Do NOT reference ITokenService or JwtSettings
 
-Entities: {', '.join(entities)}
-Controllers: {', '.join(controllers)}""",
+Generate ONLY the Program.cs file.""",
                 step_label="Coder", keys=keys, model=model, q=q, step=8,
             )
             all_files.update(_extract_files(prog_text))
