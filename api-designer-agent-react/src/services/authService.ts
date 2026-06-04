@@ -6,6 +6,7 @@ const USER_KEY  = 'api_designer_user';
 export interface AuthUser {
   username: string;
   email: string;
+  role: string;
   created_at: string;
 }
 
@@ -15,6 +16,7 @@ export interface LoginResponse {
   expires_in: number;
   username: string;
   email: string;
+  role: string;
 }
 
 // ── Token helpers ─────────────────────────────────────────────────────────────
@@ -24,7 +26,7 @@ export function getToken(): string | null {
 
 export function getUser(): AuthUser | null {
   const raw = localStorage.getItem(USER_KEY);
-  return raw ? JSON.parse(raw) : null;
+  return raw ? (JSON.parse(raw) as AuthUser) : null;
 }
 
 export function isAuthenticated(): boolean {
@@ -39,7 +41,6 @@ function saveSession(token: string, user: AuthUser): void {
 export function logout(): void {
   localStorage.removeItem(TOKEN_KEY);
   localStorage.removeItem(USER_KEY);
-  // Full page reload → App re-reads localStorage → no token → sign-in page shows
   window.location.href = '/';
 }
 
@@ -59,13 +60,17 @@ export async function register(username: string, email: string, password: string
 
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(typeof data.detail === 'string' ? data.detail : 'Registration failed');
+    const detail = data.detail;
+    const msg = Array.isArray(detail)
+      ? detail.map((e: { msg: string }) => e.msg).join(', ')
+      : typeof detail === 'string' ? detail : 'Registration failed';
+    throw new Error(msg);
   }
   return data as AuthUser;
 }
 
 // ── Login ─────────────────────────────────────────────────────────────────────
-// Jira/OAuth2 form format: username + password as form fields (not JSON)
+// FastAPI OAuth2PasswordRequestForm requires application/x-www-form-urlencoded
 export async function login(username: string, password: string): Promise<LoginResponse> {
   const form = new URLSearchParams();
   form.append('username', username);
@@ -79,16 +84,20 @@ export async function login(username: string, password: string): Promise<LoginRe
 
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(typeof data.detail === 'string' ? data.detail : 'Login failed');
+    const detail = data.detail;
+    const msg = Array.isArray(detail)
+      ? detail.map((e: { msg: string }) => e.msg).join(', ')
+      : typeof detail === 'string' ? detail : 'Login failed';
+    throw new Error(msg);
   }
 
   const loginData = data as LoginResponse;
   saveSession(loginData.access_token, {
     username: loginData.username,
     email: loginData.email,
+    role: loginData.role,
     created_at: new Date().toISOString(),
   });
-  // Full page reload → App re-reads localStorage → dashboard mounts cleanly
   window.location.href = '/';
   return loginData;
 }
@@ -98,6 +107,10 @@ export async function fetchMe(): Promise<AuthUser> {
   const res = await fetch(`${config.apiBaseUrl}/api/auth/me`, {
     headers: authHeaders(),
   });
+  if (res.status === 401) {
+    logout();
+    throw new Error('Session expired. Please log in again.');
+  }
   const data = await res.json();
   if (!res.ok) {
     throw new Error(typeof data.detail === 'string' ? data.detail : 'Failed to fetch user');
@@ -112,8 +125,16 @@ export async function resetPassword(currentPassword: string, newPassword: string
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
   });
+  if (res.status === 401) {
+    logout();
+    throw new Error('Session expired. Please log in again.');
+  }
   const data = await res.json();
   if (!res.ok) {
-    throw new Error(typeof data.detail === 'string' ? data.detail : 'Password reset failed');
+    const detail = data.detail;
+    const msg = Array.isArray(detail)
+      ? detail.map((e: { msg: string }) => e.msg).join(', ')
+      : typeof detail === 'string' ? detail : 'Password reset failed';
+    throw new Error(msg);
   }
 }

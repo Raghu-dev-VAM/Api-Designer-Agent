@@ -312,6 +312,11 @@ Output ONLY the Markdown, no extra commentary.
                 f"{provider.name} unavailable ({response.status_code})"
             )
 
+        if response.status_code == 401:
+            raise _RateLimitError(
+                f"{provider.name} auth failed — invalid or expired API key ({response.status_code})"
+            )
+
         if response.status_code != 200:
             raise RuntimeError(
                 f"{provider.name} error {response.status_code}: {response.text[:200]}"

@@ -46,7 +46,12 @@ async def generate_openapi(request: GenerateRequest, _: dict = Depends(get_curre
         )
     except Exception as ex:
         logger.error("Generate failed: %s", ex)
-        raise HTTPException(status_code=500, detail=str(ex))
+        msg = str(ex)
+        if "Invalid API Key" in msg or "invalid_api_key" in msg:
+            raise HTTPException(status_code=503, detail="LLM service unavailable: Groq API key is invalid or expired. Please update GROQ_API_KEY in .env")
+        if "All LLM providers" in msg:
+            raise HTTPException(status_code=503, detail="LLM service temporarily unavailable. Please try again shortly or check your API keys.")
+        raise HTTPException(status_code=500, detail=msg)
 
 
 @router.post("/validate", response_model=ValidateResponse)

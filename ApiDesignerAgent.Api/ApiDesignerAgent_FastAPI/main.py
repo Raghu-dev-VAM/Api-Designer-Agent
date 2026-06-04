@@ -4,6 +4,7 @@ All route logic lives in routers/.
 """
 
 import logging
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
@@ -13,9 +14,16 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
 
 from config import settings
+from database import init_db
 from routers import designer, azure, jira, confluence, excel, codegen
 from routers.auth import router as auth_router
 logging.basicConfig(level=logging.INFO)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await init_db()
+    yield
 
 TAGS_METADATA = [
     {
@@ -51,6 +59,7 @@ TAGS_METADATA = [
 app = FastAPI(
     title=settings.app_title,
     version=settings.app_version,
+    lifespan=lifespan,
     description=(
         "## API Designer Agent\n\n"
         "An AI-powered tool that generates complete **OpenAPI 3.0.3** specifications "
@@ -81,6 +90,7 @@ app.add_middleware(
     allow_credentials=settings.cors_credentials,
     allow_methods=settings.parsed_cors_methods,
     allow_headers=settings.parsed_cors_headers,
+    expose_headers=["Authorization"],
 )
 
 # auth first — so Register/Login appear at top of Swagger UI

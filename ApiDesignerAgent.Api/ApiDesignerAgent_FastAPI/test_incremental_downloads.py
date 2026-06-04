@@ -1,6 +1,7 @@
 """
 Test script for incremental code generation downloads.
-Demonstrates how to download code as it's being generated.
+Requires a running server: python run.py
+Usage: python test_incremental_downloads.py
 """
 
 import requests
@@ -8,11 +9,27 @@ import time
 import json
 from pathlib import Path
 
-BASE_URL = "http://localhost:8000"  # Adjust to your server URL
+BASE_URL = "http://localhost:8000"
+
+
+def get_token(username="admin", password="admin1234"):
+    """Get auth token. Register user if not exists."""
+    r = requests.post(f"{BASE_URL}/api/auth/login",
+                      data={"username": username, "password": password})
+    if r.status_code == 200:
+        return r.json()["access_token"]
+    # Try registering
+    requests.post(f"{BASE_URL}/api/auth/register",
+                  json={"username": username, "email": f"{username}@test.com", "password": password})
+    r = requests.post(f"{BASE_URL}/api/auth/login",
+                      data={"username": username, "password": password})
+    return r.json().get("access_token", "")
 
 def test_incremental_downloads():
     """Test incremental download functionality."""
-    
+    token = get_token()
+    headers = {"Authorization": f"Bearer {token}"}
+
     # Sample OpenAPI spec
     openapi_yaml = """
 openapi: 3.0.0
@@ -41,7 +58,7 @@ components:
     """
     
     # Start code generation
-    print("🚀 Starting code generation...")
+    print("Starting code generation...")
     response = requests.post(
         f"{BASE_URL}/api/codegen/generate-dotnet",
         json={
@@ -49,7 +66,8 @@ components:
             "project_name": "TestApi",
             "llm_provider": "groq",
             "include_tests": False
-        }
+        },
+        headers=headers
     )
     
     if response.status_code != 200:
