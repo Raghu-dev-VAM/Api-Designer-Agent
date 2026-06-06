@@ -3,10 +3,10 @@ import logging
 import re
 from typing import Optional, List, Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from dependencies import get_groq_service, get_current_user
+from dependencies import get_groq_service
 from routers.designer import _clean_json
 
 logger = logging.getLogger(__name__)
@@ -67,7 +67,7 @@ class ExcelExtractRequest(BaseModel):
 
 
 @router.post("/debug")
-async def debug_excel(request: ExcelExtractRequest, _: dict = Depends(get_current_user)):
+async def debug_excel(request: ExcelExtractRequest):
     if not request.rows:
         return {"error": "No rows received"}
     first = request.rows[0] if isinstance(request.rows[0], dict) else {}
@@ -109,7 +109,7 @@ Rows:
 
 
 @router.post("/extract-requirements")
-async def extract_requirements_from_excel(request: ExcelExtractRequest, _: dict = Depends(get_current_user)):
+async def extract_requirements_from_excel(request: ExcelExtractRequest):
     if not request.rows:
         raise HTTPException(status_code=400, detail="No data rows provided.")
 

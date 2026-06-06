@@ -32,8 +32,7 @@ def _strip_fences(text: str) -> str:
     return t.strip()
 
 # ── Retry / fallback constants ─────────────────────────────────────────────────
-_RETRY_DELAYS   = [3, 10, 30, 60]          # seconds between retries
-_RATE_LIMIT_CODES = {429, 529}             # HTTP codes treated as rate-limit
+_RATE_LIMIT_CODES  = {429, 529}             # HTTP codes treated as rate-limit
 _UNAVAILABLE_CODES = {500, 502, 503, 504}  # HTTP codes treated as provider down
 
 
@@ -72,9 +71,10 @@ def _build_provider_chain(settings) -> List[ProviderConfig]:
             base_url="https://api.groq.com/openai/v1/chat/completions",
             api_keys=groq_keys,
             models=[
-                settings.groq_model,
-                "llama-3.1-8b-instant",     # smaller/faster fallback
-                "gemma2-9b-it",             # last groq resort
+                settings.groq_model,                              # llama-3.3-70b-versatile
+                "meta-llama/llama-4-scout-17b-16e-instruct",      # llama 4 fallback
+                "llama-3.1-8b-instant",                           # lighter/faster fallback
+                "qwen/qwen3-32b",                                  # qwen fallback
             ],
         ))
 
@@ -123,10 +123,8 @@ class GroqService:
         base_url: str = "https://api.groq.com/openai/v1/chat/completions",
         settings=None,
     ):
-        self.client = httpx.AsyncClient(timeout=120.0)
-
+        # No shared client — each call creates its own to avoid stale connections
         if settings is not None:
-            # Full resilient mode — build provider chain from settings
             self._providers = _build_provider_chain(settings)
             logger.info(
                 "LLM service initialised with %d provider(s): %s",
@@ -134,7 +132,6 @@ class GroqService:
                 [p.name for p in self._providers],
             )
         else:
-            # Legacy single-provider mode (backwards compatible)
             if not api_keys:
                 raise ValueError("At least one API key must be provided")
             self._providers = [ProviderConfig(
@@ -228,47 +225,40 @@ Output ONLY the Markdown, no extra commentary.
         model: str,
     ) -> Optional[str]:
         """
-        Layer 5: Retry with exponential backoff for a single provider+model.
-        Uses the SAME key on retry (backoff) then rotates to next key.
-        Returns None if all retries fail so caller can try next model/provider.
+        On 429: immediately rotate to the next key.
+        Only falls back to next model when all keys are exhausted.
         """
-        # Snapshot one key per attempt — don't burn through all keys on retries
-        keys_to_try = [provider.next_key() for _ in range(min(len(provider.api_keys), len(_RETRY_DELAYS)))]
+        n_keys = len(provider.api_keys)
 
-        for attempt, (api_key, delay) in enumerate(zip(keys_to_try, _RETRY_DELAYS)):
+        for attempt in range(n_keys):
+            api_key = provider.next_key()
             try:
                 result = await self._call_provider(prompt, provider, model, api_key)
                 if attempt > 0:
-                    logger.info(
-                        "Recovered on attempt %d via %s/%s",
-                        attempt + 1, provider.name, model,
-                    )
+                    logger.info("Recovered on attempt %d via %s/%s", attempt + 1, provider.name, model)
                 return result
 
             except _RateLimitError as ex:
                 logger.warning(
-                    "[%s/%s] Rate limited key %s (attempt %d/%d) — waiting %ds",
-                    provider.name, model, api_key[:8], attempt + 1, len(keys_to_try), delay,
+                    "[%s/%s] Key ...%s rate limited (attempt %d/%d) - rotating to next key",
+                    provider.name, model, api_key[-4:], attempt + 1, n_keys,
                 )
-                if attempt == len(keys_to_try) - 1:
+                # Last key also rate-limited: move to next fallback model
+                if attempt == n_keys - 1:
+                    logger.warning("[%s/%s] All %d keys rate limited - trying next model",
+                                   provider.name, model, n_keys)
                     return None
-                await asyncio.sleep(delay)
+                # Otherwise rotate immediately, no sleep
 
             except _ProviderDownError as ex:
-                logger.warning(
-                    "[%s/%s] Provider unavailable — skipping to next: %s",
-                    provider.name, model, ex,
-                )
+                logger.warning("[%s/%s] Provider unavailable: %s", provider.name, model, ex)
                 return None
 
             except Exception as ex:
-                logger.error(
-                    "[%s/%s] Unexpected error (attempt %d): %s",
-                    provider.name, model, attempt + 1, ex,
-                )
-                if attempt == len(keys_to_try) - 1:
+                logger.error("[%s/%s] Unexpected error (attempt %d): %s", provider.name, model, attempt + 1, ex)
+                if attempt == n_keys - 1:
                     return None
-                await asyncio.sleep(delay)
+                await asyncio.sleep(2)
 
         return None
 
@@ -294,27 +284,33 @@ Output ONLY the Markdown, no extra commentary.
         logger.debug("Calling %s with model %s", provider.name, model)
 
         try:
-            response = await self.client.post(
-                provider.base_url, json=payload, headers=headers
-            )
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                response = await client.post(
+                    provider.base_url, json=payload, headers=headers
+                )
         except httpx.TimeoutException as ex:
             raise _ProviderDownError(f"{provider.name} timed out") from ex
         except httpx.ConnectError as ex:
             raise _ProviderDownError(f"{provider.name} unreachable") from ex
 
         if response.status_code in _RATE_LIMIT_CODES:
+            # Honour Groq's retry-after header when present
+            retry_after = response.headers.get("retry-after") or response.headers.get("x-ratelimit-reset-requests")
+            wait = int(retry_after) if retry_after and str(retry_after).isdigit() else None
             raise _RateLimitError(
-                f"{provider.name} rate limited ({response.status_code})"
+                f"{provider.name} rate limited ({response.status_code})",
+                retry_after=wait,
+            )
+
+        if response.status_code == 401:
+            # Invalid key — skip immediately, don't retry
+            raise _ProviderDownError(
+                f"{provider.name} auth failed - invalid or expired API key"
             )
 
         if response.status_code in _UNAVAILABLE_CODES:
             raise _ProviderDownError(
                 f"{provider.name} unavailable ({response.status_code})"
-            )
-
-        if response.status_code == 401:
-            raise _RateLimitError(
-                f"{provider.name} auth failed — invalid or expired API key ({response.status_code})"
             )
 
         if response.status_code != 200:
@@ -325,16 +321,13 @@ Output ONLY the Markdown, no extra commentary.
         data = response.json()
         return data["choices"][0]["message"]["content"]
 
-    def __del__(self):
-        try:
-            self.client.aclose()
-        except Exception:
-            pass
-
 
 # ── Internal exception types ───────────────────────────────────────────────────
 class _RateLimitError(Exception):
-    """429 / 529 — back off and retry same or next key."""
+    """429 / 529 - back off and retry same or next key."""
+    def __init__(self, msg: str = "", retry_after: Optional[int] = None):
+        super().__init__(msg)
+        self.retry_after = retry_after
 
 class _ProviderDownError(Exception):
     """5xx / timeout / connect error — skip to next provider immediately."""

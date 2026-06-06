@@ -4,10 +4,10 @@ import logging
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from dependencies import get_groq_service, get_current_user
+from dependencies import get_groq_service
 from routers.designer import _clean_json
 
 logger = logging.getLogger(__name__)
@@ -25,7 +25,7 @@ class AzureFetchRequest(BaseModel):
 
 
 @router.post("/fetch-stories")
-async def fetch_azure_stories(request: AzureFetchRequest, _: dict = Depends(get_current_user)):
+async def fetch_azure_stories(request: AzureFetchRequest):
     token = base64.b64encode(f":{request.pat}".encode()).decode()
     headers = {"Authorization": f"Basic {token}", "Content-Type": "application/json"}
     base = f"https://dev.azure.com/{request.organization}/{request.project}/_apis"

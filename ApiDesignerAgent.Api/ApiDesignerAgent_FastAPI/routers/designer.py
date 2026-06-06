@@ -3,14 +3,14 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File
 
 from models import (
     GenerateRequest, GenerateResponse,
     ValidateRequest, ValidateResponse,
     ArtifactRequest,
 )
-from dependencies import get_groq_service, get_python_service, get_current_user
+from dependencies import get_groq_service, get_python_service
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/designer", tags=["designer"])
@@ -20,7 +20,7 @@ python_service = get_python_service()
 
 
 @router.post("/generate", response_model=GenerateResponse)
-async def generate_openapi(request: GenerateRequest, _: dict = Depends(get_current_user)):
+async def generate_openapi(request: GenerateRequest):
     if not request.requirements:
         raise HTTPException(status_code=400, detail="At least one requirement is required.")
 
@@ -55,14 +55,14 @@ async def generate_openapi(request: GenerateRequest, _: dict = Depends(get_curre
 
 
 @router.post("/validate", response_model=ValidateResponse)
-async def validate_openapi_spec(request: ValidateRequest, _: dict = Depends(get_current_user)):
+async def validate_openapi_spec(request: ValidateRequest):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
     return python_service.validate_openapi(request.open_api_yaml)
 
 
 @router.post("/artifact")
-async def get_artifact(request: ArtifactRequest, _: dict = Depends(get_current_user)):
+async def get_artifact(request: ArtifactRequest):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
 
@@ -84,7 +84,7 @@ async def get_artifact(request: ArtifactRequest, _: dict = Depends(get_current_u
 
 
 @router.post("/extract-requirements")
-async def extract_requirements_from_document(file: UploadFile = File(...), _: dict = Depends(get_current_user)):
+async def extract_requirements_from_document(file: UploadFile = File(...)):
     if not file.filename or not file.filename.lower().endswith(".docx"):
         raise HTTPException(status_code=400, detail="Only .docx files are supported.")
     try:
@@ -145,7 +145,7 @@ def _clean_yaml(raw: str) -> str:
 
 
 @router.post("/swagger-docs")
-async def generate_swagger_docs(request: ArtifactRequest, _: dict = Depends(get_current_user)):
+async def generate_swagger_docs(request: ArtifactRequest):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
     try:
@@ -197,7 +197,7 @@ async def generate_swagger_docs(request: ArtifactRequest, _: dict = Depends(get_
 
 
 @router.post("/data-models")
-async def generate_data_models(request: ArtifactRequest, _: dict = Depends(get_current_user)):
+async def generate_data_models(request: ArtifactRequest):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
 

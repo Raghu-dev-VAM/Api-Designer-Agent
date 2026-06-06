@@ -4,7 +4,6 @@ All route logic lives in routers/.
 """
 
 import logging
-from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from fastapi import FastAPI
@@ -14,22 +13,11 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
 
 from config import settings
-from database import init_db
 from routers import designer, azure, jira, confluence, excel, codegen
-from routers.auth import router as auth_router
+
 logging.basicConfig(level=logging.INFO)
 
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    await init_db()
-    yield
-
 TAGS_METADATA = [
-    {
-        "name": "auth",
-        "description": "Register, login and get current user. Returns JWT Bearer token.",
-    },
     {
         "name": "designer",
         "description": "Generate, validate and export OpenAPI specifications from functional requirements using Groq AI.",
@@ -59,7 +47,6 @@ TAGS_METADATA = [
 app = FastAPI(
     title=settings.app_title,
     version=settings.app_version,
-    lifespan=lifespan,
     description=(
         "## API Designer Agent\n\n"
         "An AI-powered tool that generates complete **OpenAPI 3.0.3** specifications "
@@ -70,7 +57,6 @@ app = FastAPI(
         "- ⚡ Generate OpenAPI YAML/JSON specs with a single API call\n"
         "- ✅ Validate OpenAPI specifications\n"
         "- 📦 Export Postman collections and data models\n"
-        "- 🔐 JWT Authentication — register, login, protect all endpoints\n"
     ),
     openapi_tags=TAGS_METADATA,
     contact={
@@ -86,15 +72,12 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.parsed_cors_origins,
-    allow_credentials=settings.cors_credentials,
-    allow_methods=settings.parsed_cors_methods,
-    allow_headers=settings.parsed_cors_headers,
-    expose_headers=["Authorization"],
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
-# auth first — so Register/Login appear at top of Swagger UI
-app.include_router(auth_router)
 app.include_router(designer.router)
 app.include_router(azure.router)
 app.include_router(jira.router)
@@ -125,8 +108,6 @@ async def swagger_ui() -> HTMLResponse:
     )
 
 
-# Custom OpenAPI schema — adds JWT BearerAuth security scheme
-# .NET equivalent: c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme {...})
 @app.get("/openapi.json", include_in_schema=False)
 async def openapi_schema():
     schema = get_openapi(
@@ -136,14 +117,6 @@ async def openapi_schema():
         tags=TAGS_METADATA,
         routes=app.routes,
     )
-    schema.setdefault("components", {})["securitySchemes"] = {
-        "BearerAuth": {
-            "type": "http",
-            "scheme": "bearer",
-            "bearerFormat": "JWT",
-            "description": "Paste the token from POST /api/auth/login",
-        }
-    }
     return schema
 
 

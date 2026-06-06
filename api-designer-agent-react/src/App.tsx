@@ -1,30 +1,24 @@
-import { useState, useRef, useMemo, useCallback } from 'react';
+import { useState, useRef, useCallback } from 'react';
 import Icon from './components/Icon';
 import SourcesCard from './components/SourcesCard';
 import RequirementsCard from './components/RequirementsCard';
 import PreviewCard from './components/PreviewCard';
 import ArtifactsCard from './components/ArtifactsCard';
-import ActionsCard from './components/ActionsCard';
 import CodeGenPanel from './components/CodeGenPanel';
 import UserStoryReviewPanel from './components/UserStoryReviewPanel';
 import Loader from './components/Loader';
-import AuthPage from './components/AuthPage';
-import EditProfilePage from './components/EditProfilePage';
 import { sources } from './data';
 import { config } from './config';
-import { extractRequirementsFromDocx, generateOpenApi, generatePostmanCollection, generateDataModels, generateSwaggerDocs, fetchAzureStories, fetchJiraStories, fetchConfluenceStories, readExcelColumns, extractRequirementsFromExcel } from './services/documentService';import type { AzureConfig, JiraConfig, ConfluenceConfig, ExcelColumnMapping } from './services/documentService';
+import {
+  extractRequirementsFromDocx, generateOpenApi, generatePostmanCollection,
+  generateDataModels, generateSwaggerDocs, fetchAzureStories, fetchJiraStories,
+  fetchConfluenceStories, readExcelColumns, extractRequirementsFromExcel,
+} from './services/documentService';
+import type { AzureConfig, JiraConfig, ConfluenceConfig, ExcelColumnMapping } from './services/documentService';
 import ExcelColumnMapModal from './components/ExcelColumnMapModal';
 import type { ActivityItem, Requirement } from './types';
-import { isAuthenticated, getUser, logout, authHeaders } from './services/authService';
-import UserMenu from './components/UserMenu';
 
 export default function App() {
-  // ── Auth state — MUST be first, before any early return ───────────────────
-  const authed = isAuthenticated();
-  const [showEditProfile, setShowEditProfile] = useState(false);
-  const [showResetPassword, setShowResetPassword] = useState(false);
-
-  // ── All other hooks — declared unconditionally (Rules of Hooks) ───────────
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>(sources.map((s) => s.id));
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [reviewingStory, setReviewingStory] = useState<Requirement | null>(null);
@@ -52,14 +46,6 @@ export default function App() {
   const [rawText, setRawText] = useState('');
   const previewRef = useRef<HTMLDivElement>(null);
 
-  // ── Auth gate — after ALL hooks ───────────────────────────────────────────
-  if (!authed) {
-    return <AuthPage />;
-  }
-
-  const user = getUser();
-  const handleLogout = () => logout();
-
   const connectingSource = connectingAzure ? 'azure' : connectingJira ? 'jira' : connectingConfluence ? 'confluence' : null;
 
   const visibleRequirements = requirements.filter((req) =>
@@ -73,7 +59,6 @@ export default function App() {
     });
   }, []);
 
-  // ── Status toggle handler ─────────────────────────────────────────────────
   const handleStatusChange = useCallback((id: string, status: 'Draft' | 'Approved' | 'Rejected') => {
     setRequirements((cur) => cur.map((r) => r.id === id ? { ...r, status } : r));
     setSelectedRequirement((cur) => cur?.id === id ? { ...cur, status } : cur);
@@ -93,7 +78,6 @@ export default function App() {
     }
   }, [handleStatusChange]);
 
-  // ── Azure DevOps handler ──────────────────────────────────────────────────
   const handleConnectAzure = async (cfg: AzureConfig) => {
     setConnectingAzure(true);
     setToast('Fetching user stories from Azure DevOps…');
@@ -108,7 +92,6 @@ export default function App() {
     } finally { setConnectingAzure(false); }
   };
 
-  // ── Jira handler ──────────────────────────────────────────────────────────
   const handleConnectJira = async (cfg: JiraConfig) => {
     setConnectingJira(true);
     setToast('Fetching issues from Jira…');
@@ -123,7 +106,6 @@ export default function App() {
     } finally { setConnectingJira(false); }
   };
 
-  // ── Confluence handler ────────────────────────────────────────────────────
   const handleConnectConfluence = async (cfg: ConfluenceConfig) => {
     setConnectingConfluence(true);
     setToast('Fetching pages from Confluence…');
@@ -138,7 +120,6 @@ export default function App() {
     } finally { setConnectingConfluence(false); }
   };
 
-  // ── Excel handler ─────────────────────────────────────────────────────────
   const handleUploadExcel = async (file: File) => {
     setToast(`Reading columns from ${file.name}…`);
     try {
@@ -166,7 +147,6 @@ export default function App() {
     } finally { setUploadingExcel(false); }
   };
 
-  // ── Upload handler ────────────────────────────────────────────────────────
   const handleUploadDocx = async (file: File) => {
     setUploading(true);
     setToast('Extracting requirements from document…');
@@ -181,7 +161,6 @@ export default function App() {
     } finally { setUploading(false); }
   };
 
-  // ── Review panel confirm ──────────────────────────────────────────────────
   const handleConfirm = (story: Requirement) => {
     const approved: Requirement = { ...story, status: 'Approved' };
     setRequirements((cur) => cur.map((r) => r.id === approved.id ? approved : r));
@@ -192,7 +171,6 @@ export default function App() {
     setActivity((cur) => [{ label: 'Approved', value: `${approved.id}: ${approved.title}` }, ...cur.slice(0, 2)]);
   };
 
-  // ── Generate OpenAPI ──────────────────────────────────────────────────────
   const handleGenerate = async () => {
     if (!selectedRequirement || selectedRequirement.status !== 'Approved') {
       setToast('No approved requirement selected. Approve a requirement first.');
@@ -219,7 +197,6 @@ export default function App() {
     } finally { setIsGenerating(false); }
   };
 
-  // ── Generate Postman Collection ───────────────────────────────────────────
   const handleGeneratePostman = async () => {
     if (!generatedSpec || !selectedRequirement) return;
     setIsGeneratingPostman(true);
@@ -234,7 +211,6 @@ export default function App() {
     } finally { setIsGeneratingPostman(false); }
   };
 
-  // ── Generate Swagger Docs ─────────────────────────────────────────────────
   const handleGenerateSwagger = async () => {
     if (!generatedSpec || !selectedRequirement) return;
     setIsGeneratingSwagger(true);
@@ -249,7 +225,6 @@ export default function App() {
     } finally { setIsGeneratingSwagger(false); }
   };
 
-  // ── Generate Data Models ──────────────────────────────────────────────────
   const handleGenerateDataModels = async () => {
     if (!generatedSpec || !selectedRequirement) return;
     setIsGeneratingDataModels(true);
@@ -264,7 +239,6 @@ export default function App() {
     } finally { setIsGeneratingDataModels(false); }
   };
 
-  // ── Misc handlers ─────────────────────────────────────────────────────────
   const toggleSource = (id: string) => {
     setSelectedSourceIds((cur) => cur.includes(id) ? cur.filter((i) => i !== id) : [...cur, id]);
     setToast('Source selection updated');
@@ -281,19 +255,6 @@ export default function App() {
     setToast(`${filename} prepared for download`);
   };
 
-  const runAction = (name: string) => {
-    const messages: Record<string, string> = {
-      'Generate / Regenerate': selectedRequirement ? `Regenerated design for ${selectedRequirement.id}` : 'Approve a story first',
-      'Validate OpenAPI Spec': 'Validation passed: 0 errors, 2 warnings',
-      'Export to API Gateway': 'Export package queued for Kong, Apigee, and Azure APIM',
-      'Compare Changes': 'Compared against v1.3: 2 endpoints changed',
-      'Version History': 'Loaded 6 generated versions',
-    };
-    if (name === 'Generate / Regenerate') { handleGenerate(); return; }
-    setToast(messages[name]);
-    setActivity((cur) => [{ label: 'Action', value: name }, ...cur.slice(0, 2)]);
-  };
-
   return (
     <main>
       <header className="top-header">
@@ -306,14 +267,6 @@ export default function App() {
           <button onClick={() => setToast('AI design assistance is enabled')}><Icon name="spark" />AI Powered</button>
           <button onClick={() => setToast('Connector marketplace opened')}><Icon name="plug" />Plug &amp; Play</button>
           <button onClick={() => setToast('Cloud, on-prem, and hybrid targets supported')}><Icon name="globe" />Cross Platform</button>
-          {user && (
-            <UserMenu
-              user={user}
-              onProfile={() => setShowEditProfile(true)}
-              onResetPassword={() => setShowResetPassword(true)}
-              onLogout={handleLogout}
-            />
-          )}
         </div>
       </header>
 
@@ -366,10 +319,9 @@ export default function App() {
               try {
                 const res = await fetch(`${config.apiBaseUrl}/api/designer/artifact`, {
                   method: 'POST',
-                  headers: { 'Content-Type': 'application/json', ...authHeaders() },
+                  headers: { 'Content-Type': 'application/json' },
                   body: JSON.stringify({ open_api_yaml: generatedSpec, artifact_type: 'json' }),
                 });
-                if (res.status === 401) { logout(); window.location.reload(); return; }
                 const data = await res.json();
                 downloadFile('openapi.json', data.content, 'application/json');
               } catch { setToast('Failed to convert to JSON'); }
@@ -397,15 +349,10 @@ export default function App() {
         />
       </section>
 
-      {/* <section className="bottom-grid">
-        <ActionsCard onAction={runAction} />
-      </section> */}
-
       <CodeGenPanel
         openApiYaml={generatedSpec}
         projectName={selectedRequirement?.title?.replace(/\s+/g, '') ?? 'GeneratedApi'}
       />
-
 
       <UserStoryReviewPanel
         story={reviewingStory}
@@ -429,8 +376,6 @@ export default function App() {
         />
       )}
       {uploading && <Loader message="Extracting requirements from document…" />}
-      {showEditProfile && <EditProfilePage onClose={() => setShowEditProfile(false)} view="profile" />}
-      {showResetPassword && <EditProfilePage onClose={() => setShowResetPassword(false)} view="reset-password" />}
       {uploadingExcel && <Loader message="Extracting requirements from spreadsheet…" />}
       {connectingAzure && <Loader message="Fetching stories from Azure DevOps…" />}
       {connectingJira && <Loader message="Fetching issues from Jira…" />}

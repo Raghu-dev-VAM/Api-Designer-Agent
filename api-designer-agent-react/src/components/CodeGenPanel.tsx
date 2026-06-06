@@ -83,7 +83,7 @@ export default function CodeGenPanel({ openApiYaml, projectName }: Props) {
       } else if (s.event === 'agent_message') {
         setLogs((l) => [...l, s]);
       } else if (s.event === 'incremental_ready') {
-        const stepName = s.step || 'unknown';
+        const stepName = String(s.step ?? 'unknown');
         const fileCount = s.file_count || 0;
         // Capture pre-review snapshot when coder finishes
         if (CODER_FINAL_STEPS.has(stepName)) {

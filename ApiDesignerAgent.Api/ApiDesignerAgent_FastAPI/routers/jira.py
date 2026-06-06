@@ -4,10 +4,10 @@ import logging
 from typing import Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from dependencies import get_groq_service, get_current_user
+from dependencies import get_groq_service
 from routers.designer import _clean_json
 
 logger = logging.getLogger(__name__)
@@ -42,7 +42,7 @@ def _extract_adf_text(desc) -> str:
 
 
 @router.post("/fetch-stories")
-async def fetch_jira_stories(request: JiraFetchRequest, _: dict = Depends(get_current_user)):
+async def fetch_jira_stories(request: JiraFetchRequest):
     host = request.host.rstrip("/")
     if not host.startswith("https://"):
         raise HTTPException(status_code=400, detail="Jira host must use HTTPS (start with https://).")

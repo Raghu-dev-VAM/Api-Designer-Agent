@@ -1,23 +1,12 @@
 import type { Requirement } from '../types';
 import { config } from '../config';
-import { authHeaders, logout } from './authService';
 
 const TIMEOUT_MS = 120_000;
 
-// Merges auth Bearer token into every request — same as HttpClient default headers in .NET
 async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms = TIMEOUT_MS): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), ms);
-  const merged: RequestInit = {
-    ...init,
-    headers: { ...authHeaders(), ...(init.headers as Record<string, string> ?? {}) },
-    signal: controller.signal,
-  };
-  const res = await fetch(input, merged).finally(() => clearTimeout(timer));
-  if (res.status === 401) {
-    logout();
-    window.location.reload();
-  }
+  const res = await fetch(input, { ...init, signal: controller.signal }).finally(() => clearTimeout(timer));
   return res;
 }
 

@@ -17,12 +17,11 @@ from asyncio import Queue
 from typing import AsyncGenerator
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from config import settings
-from dependencies import get_current_user
 from rag_service import (
     get_data_layer_context,
     get_business_layer_context,
@@ -321,7 +320,7 @@ import time
 
 _last_call_time: float = 0.0
 _call_count: int = 0
-_MIN_CALL_INTERVAL = 1.0  # minimum seconds between calls
+_MIN_CALL_INTERVAL = 3.0  # seconds between LLM calls — prevents rapid quota exhaustion
 
 
 async def _rate_limit_wait(q: Queue = None, step: int = 0):
@@ -346,79 +345,111 @@ async def _llm(
     step: int,
 ) -> str:
     await _rate_limit_wait(q, step)
-    max_retries = 5
-    key_idx = _call_count % len(keys)
+    n_keys = len(keys)
 
-    for attempt in range(max_retries):
-        api_key = keys[(key_idx + attempt) % len(keys)]
-        key_preview = f"{api_key[:8]}...{api_key[-4:]}" if len(api_key) > 12 else "***"
-        try:
-            await q.put(_sse("agent_message", {
-                "agent": step_label,
-                "preview": f"Calling LLM (attempt {attempt+1}/{max_retries}, key: {key_preview})...",
-                "step": step,
-            }))
-            resp = await client.post(
-                "https://api.groq.com/openai/v1/chat/completions",
-                headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-                json={
-                    "model": model,
-                    "messages": [
-                        {"role": "system", "content": system},
-                        {"role": "user",   "content": user},
-                    ],
-                    "temperature": 0.2,
-                    "max_tokens": 4096,
-                },
-                timeout=60.0,
-            )
-            if resp.status_code == 429:
-                retry_after = int(resp.headers.get("retry-after", 0))
-                wait = min(retry_after, 30) if retry_after > 0 else min(10 * (attempt + 1), 30)
+    # Full model fallback chain — ordered best to most available
+    all_models = [
+        model,                                        # primary (llama-3.3-70b-versatile)
+        "llama-3.1-8b-instant",                       # lighter, separate quota
+        "meta-llama/llama-4-scout-17b-16e-instruct",  # llama 4
+        "qwen/qwen3-32b",                             # qwen fallback
+        "groq/compound-mini",                         # groq compound, different quota pool
+    ]
+    # Deduplicate while preserving order
+    seen = set()
+    model_chain = [m for m in all_models if not (m in seen or seen.add(m))]
+
+    for current_model in model_chain:
+        for attempt in range(n_keys):
+            api_key = keys[(_call_count + attempt) % n_keys]
+            try:
+                resp = await client.post(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+                    json={
+                        "model": current_model,
+                        "messages": [
+                            {"role": "system", "content": system},
+                            {"role": "user",   "content": user},
+                        ],
+                        "temperature": 0.2,
+                        "max_tokens": 4096,
+                    },
+                    timeout=60.0,
+                )
+
+                if resp.status_code == 429:
+                    # Read retry-after header — wait exactly as long as Groq says
+                    retry_after = resp.headers.get("retry-after", "")
+                    wait = int(retry_after) if retry_after.isdigit() else 5
+                    wait = min(wait, 30)  # cap at 30s
+                    if attempt < n_keys - 1:
+                        # More keys to try — just rotate
+                        await q.put(_sse("agent_message", {
+                            "agent": step_label,
+                            "preview": f"[{current_model}] Key ...{api_key[-4:]} rate limited, rotating key...",
+                            "step": step,
+                        }))
+                    else:
+                        # All keys exhausted on this model — wait before trying next model
+                        await q.put(_sse("agent_message", {
+                            "agent": step_label,
+                            "preview": f"[{current_model}] All keys rate limited, waiting {wait}s then trying next model...",
+                            "step": step,
+                        }))
+                        await asyncio.sleep(wait)
+                    continue
+
+                if resp.status_code == 401:
+                    await q.put(_sse("agent_message", {
+                        "agent": step_label,
+                        "preview": f"Key ...{api_key[-4:]} invalid, trying next...",
+                        "step": step,
+                    }))
+                    continue
+
+                if resp.status_code == 400:
+                    # Model deprecated/unavailable — skip to next model entirely
+                    logger.warning("[%s] 400 for model %s — skipping model", step_label, current_model)
+                    break
+
+                if resp.status_code != 200:
+                    logger.warning("[%s] HTTP %d from model %s: %s", step_label, resp.status_code, current_model, resp.text[:100])
+                    break
+
+                content = resp.json()["choices"][0]["message"]["content"]
+                if current_model != model:
+                    await q.put(_sse("agent_message", {
+                        "agent": step_label,
+                        "preview": f"[fallback:{current_model}] " + content[:80].replace("\n", " "),
+                        "step": step,
+                    }))
+                else:
+                    await q.put(_sse("agent_message", {
+                        "agent": step_label,
+                        "preview": content[:100].replace("\n", " "),
+                        "step": step,
+                    }))
+                return content
+
+            except httpx.TimeoutException:
                 await q.put(_sse("agent_message", {
                     "agent": step_label,
-                    "preview": f"Rate limited - waiting {wait}s, switching key...",
-                    "step": step,
-                }))
-                await asyncio.sleep(wait)
-                _last_call_time = time.time()
-                continue
-            if resp.status_code == 401:
-                await q.put(_sse("agent_message", {
-                    "agent": step_label,
-                    "preview": f"Key {key_preview} invalid, trying next...",
+                    "preview": f"Timeout on {current_model}, trying next...",
                     "step": step,
                 }))
                 continue
-            if resp.status_code != 200:
-                raise RuntimeError(f"Groq {resp.status_code}: {resp.text[:200]}")
-            content = resp.json()["choices"][0]["message"]["content"]
-            await q.put(_sse("agent_message", {
-                "agent": step_label,
-                "preview": content[:100].replace("\n", " "),
-                "step": step,
-            }))
-            return content
-        except httpx.TimeoutException:
-            await q.put(_sse("agent_message", {
-                "agent": step_label,
-                "preview": f"Timeout on attempt {attempt+1}, retrying...",
-                "step": step,
-            }))
-            continue
-        except RuntimeError:
-            raise
-        except Exception as ex:
-            logger.error("LLM error: %s", ex)
-            await q.put(_sse("agent_message", {
-                "agent": step_label,
-                "preview": f"Error: {str(ex)[:80]}, retrying...",
-                "step": step,
-            }))
-            await asyncio.sleep(3)
-            continue
+            except RuntimeError:
+                raise
+            except Exception as ex:
+                logger.error("LLM error on %s: %s", current_model, ex)
+                continue
 
-    raise RuntimeError(f"All LLM attempts failed for: {step_label}. Keys exhausted after {max_retries} retries.")
+    raise RuntimeError(
+        f"[{step_label}] All models and keys exhausted. "
+        f"Tried: {', '.join(model_chain)}. "
+        f"Free tier quota exceeded — please wait 1-2 minutes and retry."
+    )
 
 
 # -- .NET 8 Package standards (lean — full rules in knowledge/build_rules.md) --
@@ -1425,7 +1456,7 @@ Full implementations using WebApplicationFactory. No TODOs.""",
 
 # -- Endpoints -----------------------------------------------------------------
 @router.post("/generate-dotnet", response_model=CodeGenStartResponse)
-async def start_codegen(request: CodeGenRequest, _: dict = Depends(get_current_user)):
+async def start_codegen(request: CodeGenRequest):
     if not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenAPI YAML is required.")
     job_id = str(uuid.uuid4())
@@ -1452,7 +1483,7 @@ async def stream_codegen(job_id: str):
 
 
 @router.get("/download/{job_id}/{version}")
-async def download_artifact(job_id: str, version: str, _: dict = Depends(get_current_user)):
+async def download_artifact(job_id: str, version: str):
     """Download any version of generated code.
     
     Args:
