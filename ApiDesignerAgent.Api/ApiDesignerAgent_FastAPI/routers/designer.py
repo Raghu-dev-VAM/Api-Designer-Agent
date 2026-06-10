@@ -25,11 +25,10 @@ async def generate_openapi(request: GenerateRequest):
         raise HTTPException(status_code=400, detail="At least one requirement is required.")
 
     approved = [r for r in request.requirements if (r.status or "Draft").lower() == "approved"]
-    if not approved:
-        raise HTTPException(status_code=422, detail="No approved requirements found.")
+    to_process = approved if approved else request.requirements
 
     approved_request = GenerateRequest(
-        requirements=approved,
+        requirements=to_process,
         api_title=request.api_title,
         api_version=request.api_version,
     )
