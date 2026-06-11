@@ -24,16 +24,24 @@ async def generate_openapi(request: GenerateRequest):
     if not request.requirements:
         raise HTTPException(status_code=400, detail="At least one requirement is required.")
 
-    approved = [r for r in request.requirements if (r.status or "Draft").lower() == "approved"]
-    to_process = approved if approved else request.requirements
+    # Process Draft and Approved — skip only explicitly Rejected
+    to_process = [r for r in request.requirements if (r.status or "Draft").lower() != "rejected"]
+    if not to_process:
+        raise HTTPException(status_code=400, detail="All requirements are rejected. Approve or set at least one to Draft to generate.")
 
-    approved_request = GenerateRequest(
+    logger.info(
+        "Generating OpenAPI for %d requirement(s): %s",
+        len(to_process),
+        [(r.id, r.status or 'Draft') for r in to_process],
+    )
+
+    generate_request = GenerateRequest(
         requirements=to_process,
         api_title=request.api_title,
         api_version=request.api_version,
     )
     try:
-        yaml_raw = await groq_service.generate_openapi(approved_request)
+        yaml_raw = await groq_service.generate_openapi(generate_request)
         yaml_clean = _clean_yaml(yaml_raw)
         summary = await groq_service.generate_summary(yaml_clean)
         json_spec = python_service.convert_yaml_to_json(yaml_clean)

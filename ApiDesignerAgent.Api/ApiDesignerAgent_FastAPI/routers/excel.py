@@ -1,9 +1,12 @@
+import csv
+import io
 import json
 import logging
 import re
 from typing import Optional, List, Any
 
-from fastapi import APIRouter, HTTPException
+import openpyxl
+from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from dependencies import get_groq_service
@@ -13,6 +16,8 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/excel", tags=["excel"])
 
 groq_service = get_groq_service()
+
+ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
 
 
 def _match_key(key: str, patterns: List[str]) -> bool:
@@ -49,6 +54,26 @@ def _infer_method_path(story_text: str, story_id: str) -> tuple:
     if any(w in text for w in ("list", "search", "filter", "view all", "get all")):
         return "get", f"/{slug}s"
     return "get", f"/{slug}s/{{id}}"
+
+
+def _parse_file(content: bytes, filename: str) -> List[dict]:
+    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext == ".csv":
+        text = content.decode("utf-8-sig", errors="replace")
+        reader = csv.DictReader(io.StringIO(text))
+        return [dict(row) for row in reader]
+    if ext == ".xlsx":
+        wb = openpyxl.load_workbook(io.BytesIO(content), read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        if not rows:
+            return []
+        headers = [str(h).strip() if h is not None else f"col_{i}" for i, h in enumerate(rows[0])]
+        return [
+            {headers[j]: (str(cell).strip() if cell is not None else "") for j, cell in enumerate(row)}
+            for row in rows[1:]
+        ]
+    raise HTTPException(status_code=400, detail="Unsupported file type. Only .csv and .xlsx are allowed.")
 
 
 class ColumnMapping(BaseModel):
@@ -108,23 +133,12 @@ Rows:
     return json.loads(_clean_json(raw))
 
 
-@router.post("/extract-requirements")
-async def extract_requirements_from_excel(request: ExcelExtractRequest):
-    if not request.rows:
-        raise HTTPException(status_code=400, detail="No data rows provided.")
-
-    if request.rows and isinstance(request.rows[0], dict):
-        logger.info("Excel columns received: %s", list(request.rows[0].keys()))
-        logger.info("Excel first row sample: %s", dict(list(request.rows[0].items())[:5]))
-
+def _extract_rows(rows: list, mapping: Optional[ColumnMapping], filename: str) -> list:
     requirements = []
-
-    for i, row in enumerate(request.rows):
+    for i, row in enumerate(rows):
         if not isinstance(row, dict):
             continue
-
-        m = request.mapping
-
+        m = mapping
         if m and m.userStory:
             story_id   = str(row.get(m.storyId, "")).strip()   if m.storyId   else ""
             epic       = str(row.get(m.epic, "")).strip()       if m.epic       else ""
@@ -141,22 +155,18 @@ async def extract_requirements_from_excel(request: ExcelExtractRequest):
             title_val  = epic
 
         story_id = story_id or f"FR-{i + 1:03d}"
-
         if not user_story:
             logger.warning("Row %d skipped — no user story column found. Keys: %s", i, list(row.keys()))
             continue
 
         method, path = _infer_method_path(user_story, story_id)
-
-        desc = user_story
-        if criteria:
-            desc = f"{user_story} Acceptance criteria: {criteria[:200]}"
+        desc = user_story if not criteria else f"{user_story} Acceptance criteria: {criteria[:200]}"
 
         requirements.append({
             "id":       f"FR-{i + 1:03d}",
             "title":    title_val or story_id,
             "desc":     desc[:400],
-            "source":   f"Excel: {request.filename} ({story_id})",
+            "source":   f"Excel: {filename} ({story_id})",
             "priority": _priority_map(priority),
             "status":   "Draft",
             "method":   method,
@@ -164,10 +174,41 @@ async def extract_requirements_from_excel(request: ExcelExtractRequest):
             "summary":  user_story[:120],
             "acceptanceCriteria": [c.strip() for c in re.split(r"[;\n]+", criteria) if c.strip()] if criteria else [],
         })
+    return requirements
+
+
+@router.post("/extract-requirements")
+async def extract_requirements_from_excel(
+    file: UploadFile = File(..., description="Excel file (.csv or .xlsx)"),
+    mapping: Optional[str] = Form(None, description="Optional JSON column mapping, e.g. {\"userStory\":\"User Story\",\"priority\":\"Priority\"}"),
+):
+    filename = file.filename or "spreadsheet"
+    ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Invalid file type '{ext}'. Only .csv and .xlsx are accepted.")
+
+    content = await file.read()
+    if not content:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    rows = _parse_file(content, filename)
+    if not rows:
+        raise HTTPException(status_code=400, detail="No data rows found in the file.")
+
+    logger.info("Excel upload: %s — %d rows, columns: %s", filename, len(rows), list(rows[0].keys()) if rows else [])
+
+    col_mapping: Optional[ColumnMapping] = None
+    if mapping:
+        try:
+            col_mapping = ColumnMapping(**json.loads(mapping))
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid mapping JSON.")
+
+    requirements = _extract_rows(rows, col_mapping, filename)
 
     if not requirements:
         try:
-            requirements = await _groq_fallback(request.rows, request.filename or "spreadsheet")
+            requirements = await _groq_fallback(rows, filename)
         except Exception as ex:
             logger.error("Excel Groq fallback failed: %s", ex)
             raise HTTPException(status_code=500, detail=f"Extraction failed: {ex}")
@@ -175,7 +216,7 @@ async def extract_requirements_from_excel(request: ExcelExtractRequest):
     if not requirements:
         raise HTTPException(
             status_code=422,
-            detail="No user stories found. Ensure the sheet has a 'User Story' column."
+            detail="No user stories found. Ensure the sheet has a 'User Story' column or provide a column mapping."
         )
 
     return {"requirements": requirements}

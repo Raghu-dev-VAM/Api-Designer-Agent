@@ -144,10 +144,11 @@ class GroqService:
     # ── Public interface (unchanged — callers don't need to change) ────────────
     async def generate_openapi(self, request: GenerateRequest) -> str:
         requirements_list = "\n".join(
-            f"- [{req.id}] {req.title} (Priority: {req.priority}): {req.description} [Source: {req.source}]"
+            f"- [{req.id}] {req.title} | Status: {req.status or 'Draft'} | Priority: {req.priority} | Source: {req.source}\n"
+            f"  Description: {req.description}"
             for req in request.requirements
         )
-        prompt = f"""You are an expert API designer. Generate a complete, valid OpenAPI 3.0.3 YAML specification based on these functional requirements:
+        prompt = f"""You are an expert API designer. Generate a complete, valid OpenAPI 3.0.3 YAML specification based on these functional requirements.
 
 API Title: {request.api_title}
 API Version: {request.api_version}
@@ -157,10 +158,13 @@ Requirements:
 
 Rules:
 - Output ONLY valid YAML, no markdown fences, no explanation
+- Generate an endpoint for EVERY requirement listed regardless of its status (Draft or Approved)
+- Derive the HTTP method and REST path from each requirement's description and story id
 - Include paths, components/schemas, request bodies, responses with proper HTTP status codes
 - Use RESTful conventions
 - Add descriptions to all fields
 - Include 400, 404, 500 error responses
+- Use the story id (e.g. US001) as part of operationId for traceability
 """
         raw = await self._call_groq(prompt)
         return self._clean_yaml(raw)

@@ -37,7 +37,7 @@ export default function RequirementsCard({
   requirements, selectedRequirement, rawText, search, tab,
   onTabChange, onSearchChange, onSelectRequirement, onViewRequirement, onStatusChange, onGenerate, isGenerating, onFilter, onRefresh
 }: RequirementsCardProps) {
-  const canGenerate = selectedRequirement?.status === 'Approved' && !isGenerating;
+  const canGenerate = !!selectedRequirement && !isGenerating;
   const hideSearch = tab === 'Raw' || tab === 'Summary';
 
   const approved  = requirements.filter((r) => r.status === 'Approved').length;
@@ -168,7 +168,7 @@ export default function RequirementsCard({
               className="primary-btn"
               onClick={onGenerate}
               disabled={!canGenerate}
-              title={canGenerate ? 'Generate OpenAPI spec' : isGenerating ? 'Generation in progress…' : 'Only Approved requirements can be used to generate a spec'}
+              title={canGenerate ? 'Generate OpenAPI spec' : isGenerating ? 'Generation in progress…' : 'Select a requirement to generate'}
             >
               {isGenerating ? 'Generating…' : 'Generate'} <Icon name="arrow" size={17} />
             </button>
@@ -177,7 +177,7 @@ export default function RequirementsCard({
                 ? 'Generating OpenAPI spec, please wait…'
                 : canGenerate
                   ? 'Click Generate to create the OpenAPI spec'
-                  : 'Approve a requirement to enable generation'}
+                  : 'Select a requirement to enable generation'}
             </p>
           </>
         )}

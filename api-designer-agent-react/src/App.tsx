@@ -67,15 +67,11 @@ export default function App() {
 
   const handleRequirementStatusChange = useCallback((id: string, status: 'Draft' | 'Approved' | 'Rejected') => {
     handleStatusChange(id, status);
-    if (status === 'Approved') {
-      setRequirements((cur) => {
-        const req = cur.find((r) => r.id === id);
-        if (req) setSelectedRequirement({ ...req, status: 'Approved' });
-        return cur;
-      });
-    } else {
-      setSelectedRequirement((cur) => cur?.id === id ? null : cur);
-    }
+    setRequirements((cur) => {
+      const req = cur.find((r) => r.id === id);
+      if (req) setSelectedRequirement({ ...req, status });
+      return cur;
+    });
   }, [handleStatusChange]);
 
   const handleConnectAzure = async (cfg: AzureConfig) => {
@@ -172,8 +168,8 @@ export default function App() {
   };
 
   const handleGenerate = async () => {
-    if (!selectedRequirement || selectedRequirement.status !== 'Approved') {
-      setToast('No approved requirement selected. Approve a requirement first.');
+    if (!selectedRequirement) {
+      setToast('No requirement selected. Select a requirement first.');
       return;
     }
     setIsGenerating(true);
@@ -296,7 +292,10 @@ export default function App() {
           tab={tab}
           onTabChange={setTab}
           onSearchChange={setSearch}
-          onSelectRequirement={(req) => setReviewingStory(req)}
+          onSelectRequirement={(req) => {
+            setSelectedRequirement(req);
+            setReviewingStory(req);
+          }}
           onViewRequirement={(req) => setViewingStory(req)}
           onStatusChange={handleRequirementStatusChange}
           onGenerate={handleGenerate}

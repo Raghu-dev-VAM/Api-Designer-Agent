@@ -52,10 +52,10 @@ export async function generateOpenApi(requirement: Requirement): Promise<{ yaml:
     requirements: [{
       id: requirement.id,
       title: requirement.title,
-      description: requirement.desc,
+      description: `${requirement.desc}${requirement.summary ? ` Summary: ${requirement.summary}` : ''}${requirement.method ? ` HTTP Method: ${requirement.method.toUpperCase()}` : ''}${requirement.path ? ` Path: ${requirement.path}` : ''}`,
       source: requirement.source,
       priority: requirement.priority,
-      status: requirement.status,
+      status: requirement.status ?? 'Draft',
     }],
     api_title: requirement.title,
     api_version: '1.0.0',
@@ -232,10 +232,13 @@ export async function extractRequirementsFromExcel(
   rows: Record<string, string>[],
   mapping: ExcelColumnMapping
 ): Promise<Requirement[]> {
+  const form = new FormData();
+  form.append('file', file);
+  form.append('mapping', JSON.stringify(mapping));
+
   const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/excel/extract-requirements`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ rows, filename: file.name, mapping }),
+    body: form,
   });
 
   if (!res.ok) {
