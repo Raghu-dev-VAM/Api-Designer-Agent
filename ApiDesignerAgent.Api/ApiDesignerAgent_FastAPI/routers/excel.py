@@ -15,7 +15,13 @@ from routers.designer import _clean_json
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/excel", tags=["excel"])
 
-groq_service = get_groq_service()
+_groq_service = None
+
+def _get_groq():
+    global _groq_service
+    if _groq_service is None:
+        _groq_service = get_groq_service()
+    return _groq_service
 
 ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
 

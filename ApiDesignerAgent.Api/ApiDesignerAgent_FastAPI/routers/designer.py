@@ -15,8 +15,13 @@ from dependencies import get_groq_service, get_python_service
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/designer", tags=["designer"])
 
-groq_service = get_groq_service()
-python_service = get_python_service()
+
+def _get_groq():
+    return get_groq_service()
+
+
+def _get_python():
+    return get_python_service()
 
 
 @router.post("/generate", response_model=GenerateResponse)
@@ -41,10 +46,10 @@ async def generate_openapi(request: GenerateRequest):
         api_version=request.api_version,
     )
     try:
-        yaml_raw = await groq_service.generate_openapi(generate_request)
+        yaml_raw = await _get_groq().generate_openapi(generate_request)
         yaml_clean = _clean_yaml(yaml_raw)
-        summary = await groq_service.generate_summary(yaml_clean)
-        json_spec = python_service.convert_yaml_to_json(yaml_clean)
+        summary = await _get_groq().generate_summary(yaml_clean)
+        json_spec = _get_python().convert_yaml_to_json(yaml_clean)
         return GenerateResponse(
             open_api_yaml=yaml_clean,
             open_api_json=json_spec,
@@ -65,7 +70,7 @@ async def generate_openapi(request: GenerateRequest):
 async def validate_openapi_spec(request: ValidateRequest):
     if not request.open_api_yaml or not request.open_api_yaml.strip():
         raise HTTPException(status_code=400, detail="OpenApiYaml is required.")
-    return python_service.validate_openapi(request.open_api_yaml)
+    return _get_python().validate_openapi(request.open_api_yaml)
 
 
 @router.post("/artifact")
@@ -78,9 +83,9 @@ async def get_artifact(request: ArtifactRequest):
         if artifact_type == "yaml":
             return {"content": request.open_api_yaml, "file_name": "openapi.yaml", "content_type": "application/x-yaml"}
         elif artifact_type == "json":
-            return {"content": python_service.convert_yaml_to_json(_clean_yaml(request.open_api_yaml)), "file_name": "openapi.json", "content_type": "application/json"}
+            return {"content": _get_python().convert_yaml_to_json(_clean_yaml(request.open_api_yaml)), "file_name": "openapi.json", "content_type": "application/json"}
         elif artifact_type == "postman":
-            return {"content": python_service.generate_postman_collection(request.open_api_yaml, request.api_title or "API Collection"), "file_name": "postman_collection.json", "content_type": "application/json"}
+            return {"content": _get_python().generate_postman_collection(request.open_api_yaml, request.api_title or "API Collection"), "file_name": "postman_collection.json", "content_type": "application/json"}
         else:
             raise HTTPException(status_code=400, detail=f"Unknown artifact type: {request.artifact_type}. Supported: yaml, json, postman")
     except HTTPException:
@@ -127,12 +132,95 @@ Document text:
 {text[:6000]}
 """
     try:
-        raw = await groq_service._call_groq(prompt)
+        raw = await _get_groq()._call_groq(prompt)
         cleaned = _clean_json(raw)
-        return {"requirements": json.loads(cleaned), "raw_text": text}
+        requirements = json.loads(cleaned)
+        return {"requirements": requirements, "raw_text": text, "extraction_method": "llm"}
     except Exception as ex:
-        logger.error("Requirement extraction failed: %s", ex)
-        raise HTTPException(status_code=500, detail=f"Extraction failed: {ex}")
+        logger.warning("LLM extraction failed (%s), falling back to rule-based extraction", ex)
+        requirements = _rule_based_extract(text)
+        return {"requirements": requirements, "raw_text": text, "extraction_method": "rule-based"}
+
+
+def _rule_based_extract(text: str) -> list:
+    """Extract requirements from document text using simple heuristics."""
+    import re
+
+    METHOD_KEYWORDS = {
+        "create": "post", "add": "post", "register": "post", "submit": "post", "upload": "post",
+        "update": "put", "edit": "put", "modify": "patch", "change": "patch",
+        "delete": "delete", "remove": "delete",
+        "get": "get", "list": "get", "view": "get", "retrieve": "get", "fetch": "get", "search": "get",
+    }
+    PRIORITY_KEYWORDS = {
+        "critical": "High", "must": "High", "required": "High", "mandatory": "High",
+        "should": "Medium", "recommended": "Medium",
+        "optional": "Low", "nice to have": "Low", "could": "Low",
+    }
+
+    # Split into sentences / bullet lines
+    lines = [l.strip() for l in re.split(r'[\n•\-–]', text) if len(l.strip()) > 20]
+    # Also consider numbered items like "1." or "FR-001"
+    sentences = []
+    for line in lines:
+        for sent in re.split(r'(?<=[.!?])\s+', line):
+            if len(sent.strip()) > 20:
+                sentences.append(sent.strip())
+
+    requirements = []
+    seen = set()
+    counter = 1
+
+    for sentence in sentences:
+        low = sentence.lower()
+        # Skip headings / very short lines
+        if len(sentence) < 25 or sentence.isupper():
+            continue
+        if sentence in seen:
+            continue
+        seen.add(sentence)
+
+        # Determine HTTP method
+        method = "get"
+        for kw, m in METHOD_KEYWORDS.items():
+            if kw in low:
+                method = m
+                break
+
+        # Determine priority
+        priority = "Medium"
+        for kw, p in PRIORITY_KEYWORDS.items():
+            if kw in low:
+                priority = p
+                break
+
+        # Build a slug for the path
+        words = re.findall(r'[a-zA-Z]+', sentence)
+        nouns = [w.lower() for w in words if len(w) > 3 and w.lower() not in
+                 {"shall", "should", "must", "will", "have", "with", "that", "this",
+                  "from", "into", "able", "user", "users", "system", "allow", "able"}]
+        resource = nouns[0] if nouns else "resource"
+        path = f"/{resource}s" if method in ("get", "post") else f"/{resource}s/{{id}}"
+
+        title_words = words[:6]
+        title = " ".join(title_words).title()
+
+        requirements.append({
+            "id": f"FR-{counter:03d}",
+            "title": title,
+            "desc": sentence,
+            "source": "Uploaded Document",
+            "priority": priority,
+            "status": "Draft",
+            "method": method,
+            "path": path,
+            "summary": f"{method.upper()} {path} — {title}",
+        })
+        counter += 1
+        if counter > 50:  # cap at 50 requirements
+            break
+
+    return requirements
 
 
 def _clean_json(raw: str) -> str:
@@ -222,7 +310,7 @@ OpenAPI YAML:
 {request.open_api_yaml[:8000]}
 """
     try:
-        raw = await groq_service._call_groq(prompt)
+        raw = await _get_groq()._call_groq(prompt)
         cleaned = _clean_json(raw)
         models = json.loads(cleaned)
         return {"content": json.dumps(models, indent=2), "file_name": "data_models.json", "content_type": "application/json"}

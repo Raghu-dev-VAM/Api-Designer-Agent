@@ -1,17 +1,31 @@
-from functools import lru_cache
 from services import GroqService, PythonService
 from config import settings
 
+_groq_service: GroqService | None = None
+_python_service: PythonService | None = None
 
-@lru_cache(maxsize=1)
+
 def get_groq_service() -> GroqService:
-    return GroqService(
-        api_keys=settings.groq_api_keys,
-        model=settings.groq_model,
-        settings=settings,
-    )
+    global _groq_service
+    if _groq_service is None:
+        # Re-read settings so fresh env values are always picked up
+        fresh = settings.__class__()
+        _groq_service = GroqService(
+            api_keys=fresh.groq_api_keys,
+            model=fresh.groq_model,
+            settings=fresh,
+        )
+    return _groq_service
 
 
-@lru_cache(maxsize=1)
+def reset_groq_service() -> None:
+    """Force re-initialisation on next call (useful after .env changes)."""
+    global _groq_service
+    _groq_service = None
+
+
 def get_python_service() -> PythonService:
-    return PythonService()
+    global _python_service
+    if _python_service is None:
+        _python_service = PythonService()
+    return _python_service
