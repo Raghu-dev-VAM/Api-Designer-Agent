@@ -190,9 +190,8 @@ export default function ArtifactsCard({
               </div>
             </div>
             <pre className="preview-modal-code">
-              {JSON.stringify(JSON.parse(postmanCollection), null, 2).split('\n').map((line, i) => (
-                <code key={i}><span>{i + 1}</span>{line}</code>
-              ))}
+              {(() => { try { return JSON.stringify(JSON.parse(postmanCollection), null, 2); } catch { return postmanCollection; } })()
+                .split('\n').map((line, i) => <code key={i}><span>{i + 1}</span>{line}</code>)}
             </pre>
           </div>
         </div>
@@ -210,9 +209,8 @@ export default function ArtifactsCard({
               </div>
             </div>
             <pre className="preview-modal-code">
-              {JSON.stringify(JSON.parse(dataModels), null, 2).split('\n').map((line, i) => (
-                <code key={i}><span>{i + 1}</span>{line}</code>
-              ))}
+              {(() => { try { return JSON.stringify(JSON.parse(dataModels), null, 2); } catch { return dataModels; } })()
+                .split('\n').map((line, i) => <code key={i}><span>{i + 1}</span>{line}</code>)}
             </pre>
           </div>
         </div>

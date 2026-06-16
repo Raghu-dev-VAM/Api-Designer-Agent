@@ -8,9 +8,11 @@ import CodeGenPanel from './components/CodeGenPanel';
 import UserStoryReviewPanel from './components/UserStoryReviewPanel';
 import ExcelColumnMapModal from './components/ExcelColumnMapModal';
 import type { ColumnMapping } from './components/ExcelColumnMapModal';
+import AuthPage from './components/AuthPage';
 import Loader from './components/Loader';
 import { sources } from './data';
 import { config } from './config';
+import { isAuthenticated } from './services/authService';
 import {
   extractRequirementsFromDocx, generateOpenApi, generatePostmanCollection,
   generateDataModels, generateSwaggerDocs, fetchAzureStories, fetchJiraStories,
@@ -20,6 +22,8 @@ import type { AzureConfig, JiraConfig, ConfluenceConfig } from './services/docum
 import type { ActivityItem, Requirement } from './types';
 
 export default function App() {
+  if (!isAuthenticated()) return <AuthPage />;
+
   const [selectedSourceIds, setSelectedSourceIds] = useState<string[]>(sources.map((s) => s.id));
   const [requirements, setRequirements] = useState<Requirement[]>([]);
   const [reviewingStory, setReviewingStory] = useState<Requirement | null>(null);

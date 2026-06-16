@@ -30,35 +30,54 @@ export default function UserStoryReviewPanel({ story, onClose, onConfirm, viewOn
   const [isEditing, setIsEditing] = useState(false);
 
   useEffect(() => {
-    setEdited(story);
+    if (!story) { setEdited(null); return; }
+    // Normalise acceptanceCriteria to string[] for editing regardless of what arrived
+    const ac = story.acceptanceCriteria;
+    const acArr: string[] = Array.isArray(ac)
+      ? ac
+      : typeof ac === 'string' && ac.trim()
+        ? ac.split(/\s{2,}|(?<=\.)\s+/).map((s) => s.trim()).filter(Boolean)
+        : [];
+    setEdited({ ...story, acceptanceCriteria: acArr as unknown as string });
     setIsEditing(false);
   }, [story]);
 
   if (!story || !edited) return null;
 
   const handleConfirm = () => {
-    onConfirm(edited);
+    if (!edited) return;
+    // Convert internal string[] back to a joined string for the rest of the app
+    const ac = acArr();
+    onConfirm({ ...edited, acceptanceCriteria: ac.join(' ') });
     setIsEditing(false);
   };
 
   const updateField = (field: keyof Requirement, value: string) =>
     setEdited((cur) => cur ? { ...cur, [field]: value } : cur);
 
+  // acceptanceCriteria is stored as string[] internally in this panel
+  const acArr = (): string[] => {
+    const ac = edited?.acceptanceCriteria;
+    if (Array.isArray(ac)) return ac;
+    if (typeof ac === 'string' && ac.trim()) return [ac];
+    return [];
+  };
+
   const updateCriteria = (index: number, value: string) =>
     setEdited((cur) => {
       if (!cur) return cur;
-      const criteria = [...(cur.acceptanceCriteria ?? [])];
+      const criteria = [...acArr()];
       criteria[index] = value;
-      return { ...cur, acceptanceCriteria: criteria };
+      return { ...cur, acceptanceCriteria: criteria as unknown as string };
     });
 
   const addCriteria = () =>
-    setEdited((cur) => cur ? { ...cur, acceptanceCriteria: [...(cur.acceptanceCriteria ?? []), ''] } : cur);
+    setEdited((cur) => cur ? { ...cur, acceptanceCriteria: [...acArr(), ''] as unknown as string } : cur);
 
   const removeCriteria = (index: number) =>
     setEdited((cur) => {
       if (!cur) return cur;
-      return { ...cur, acceptanceCriteria: (cur.acceptanceCriteria ?? []).filter((_, i) => i !== index) };
+      return { ...cur, acceptanceCriteria: acArr().filter((_, i) => i !== index) as unknown as string };
     });
 
   const methodBg = METHOD_COLORS[edited.method] ?? '#f3f4f6';
@@ -164,11 +183,11 @@ export default function UserStoryReviewPanel({ story, onClose, onConfirm, viewOn
                 </button>
               )}
             </div>
-            {(edited.acceptanceCriteria ?? []).length === 0 ? (
+            {acArr().length === 0 ? (
               <p className="review-empty">No acceptance criteria defined.{isEditing ? ' Click Add to create one.' : ''}</p>
             ) : (
               <ul className="review-criteria-list">
-                {(edited.acceptanceCriteria ?? []).map((criterion, i) => (
+                {acArr().map((criterion, i) => (
                   <li key={i} className="review-criteria-item">
                     {isEditing ? (
                       <>

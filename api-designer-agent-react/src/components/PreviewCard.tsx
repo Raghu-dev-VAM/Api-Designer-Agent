@@ -45,7 +45,7 @@ export default function PreviewCard({ spec, toast, lastGeneratedAt, isGenerating
           ) : spec ? (
             <pre className="code-area">
               {spec.split('\n').map((line, index) => (
-                <code key={`${line}-${index}`}><span>{index + 1}</span>{line}</code>
+                <code key={index}><span>{index + 1}</span>{line}</code>
               ))}
             </pre>
           ) : (
@@ -78,7 +78,7 @@ export default function PreviewCard({ spec, toast, lastGeneratedAt, isGenerating
             </div>
             <pre className="preview-modal-code">
               {spec.split('\n').map((line, index) => (
-                <code key={`${line}-${index}`}><span>{index + 1}</span>{line}</code>
+                <code key={index}><span>{index + 1}</span>{line}</code>
               ))}
             </pre>
           </div>
