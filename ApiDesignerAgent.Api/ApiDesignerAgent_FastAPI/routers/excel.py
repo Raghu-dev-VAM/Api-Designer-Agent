@@ -6,7 +6,7 @@ import re
 from typing import Optional, List, Any
 
 import openpyxl
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from dependencies import get_groq_service
@@ -15,13 +15,8 @@ from routers.designer import _clean_json
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/excel", tags=["excel"])
 
-_groq_service = None
-
 def _get_groq():
-    global _groq_service
-    if _groq_service is None:
-        _groq_service = get_groq_service()
-    return _groq_service
+    return get_groq_service()
 
 ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
 
@@ -135,8 +130,19 @@ Return a JSON array only (no markdown, no explanation) where each item has:
 Rows:
 {text[:6000]}
 """
-    raw = await groq_service._call_groq(prompt)
-    return json.loads(_clean_json(raw))
+    raw = await _get_groq()._call_groq(prompt)
+    results = json.loads(_clean_json(raw))
+    # Normalise: LLM may return "description" — frontend expects "desc"
+    for r in results:
+        if "desc" not in r and "description" in r:
+            r["desc"] = r.pop("description")
+        r.setdefault("desc", "")
+        r.setdefault("summary", "")
+        r.setdefault("method", "get")
+        r.setdefault("path", "/resource")
+        r.setdefault("acceptanceCriteria", [])
+        r.setdefault("status", "Draft")
+    return results
 
 
 def _extract_rows(rows: list, mapping: Optional[ColumnMapping], filename: str) -> list:
@@ -185,9 +191,20 @@ def _extract_rows(rows: list, mapping: Optional[ColumnMapping], filename: str) -
 
 @router.post("/extract-requirements")
 async def extract_requirements_from_excel(
-    file: UploadFile = File(..., description="Excel file (.csv or .xlsx)"),
-    mapping: Optional[str] = Form(None, description="Optional JSON column mapping, e.g. {\"userStory\":\"User Story\",\"priority\":\"Priority\"}"),
+    request: Request,
+    file: Optional[UploadFile] = File(None, description="Excel file (.csv or .xlsx)"),
+    mapping: Optional[str] = Form(None, description="Optional JSON column mapping"),
 ):
+    # VAM proxy may send the file under a different field name (e.g. excel_file)
+    # Fall back to scanning all form fields for the first UploadFile
+    if file is None or not file.filename:
+        form = await request.form()
+        for field_value in form.values():
+            if isinstance(field_value, UploadFile) and field_value.filename:
+                file = field_value
+                break
+    if file is None or not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded. Please upload a .xlsx or .csv file in the 'file' field.")
     filename = file.filename or "spreadsheet"
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
@@ -221,8 +238,8 @@ async def extract_requirements_from_excel(
 
     if not requirements:
         raise HTTPException(
-            status_code=422,
-            detail="No user stories found. Ensure the sheet has a 'User Story' column or provide a column mapping."
+            status_code=400,
+            detail="No user stories found. Ensure the sheet has a 'User Story' column or provide a column mapping via the modal."
         )
 
     return {"requirements": requirements}

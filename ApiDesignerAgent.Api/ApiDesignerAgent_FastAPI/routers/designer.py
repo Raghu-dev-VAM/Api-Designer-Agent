@@ -2,8 +2,9 @@ import io
 import json
 import logging
 from datetime import datetime, timezone
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 
 from models import (
     GenerateRequest, GenerateResponse,
@@ -96,8 +97,18 @@ async def get_artifact(request: ArtifactRequest):
 
 
 @router.post("/extract-requirements")
-async def extract_requirements_from_document(file: UploadFile = File(...)):
-    if not file.filename or not file.filename.lower().endswith(".docx"):
+async def extract_requirements_from_document(request: Request, file: Optional[UploadFile] = File(None)):
+    # VAM proxy may send the file under a different field name (e.g. word_file)
+    # Fall back to scanning all form fields for the first UploadFile
+    if file is None or not file.filename:
+        form = await request.form()
+        for field_value in form.values():
+            if isinstance(field_value, UploadFile) and field_value.filename:
+                file = field_value
+                break
+    if file is None or not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded. Please upload a .docx file in the 'file' field.")
+    if not file.filename.lower().endswith(".docx"):
         raise HTTPException(status_code=400, detail="Only .docx files are supported.")
     try:
         import docx
@@ -127,6 +138,7 @@ Return a JSON array only (no markdown, no explanation) where each item has:
 - method: HTTP method (get, post, put, patch)
 - path: REST API path like /resources/{{id}}
 - summary: one-line API operation summary
+- acceptanceCriteria: array of acceptance criteria strings (empty array [] if none)
 
 Document text:
 {text[:6000]}
@@ -135,6 +147,21 @@ Document text:
         raw = await _get_groq()._call_groq(prompt)
         cleaned = _clean_json(raw)
         requirements = json.loads(cleaned)
+        for r in requirements:
+            # Normalise: LLM may return "description" — frontend expects "desc"
+            if "desc" not in r and "description" in r:
+                r["desc"] = r.pop("description")
+            r.setdefault("desc", "")
+            r.setdefault("summary", "")
+            r.setdefault("method", "get")
+            r.setdefault("path", "/resource")
+            r.setdefault("status", "Draft")
+            # Join acceptance criteria into a single paragraph
+            ac = r.get("acceptanceCriteria", [])
+            if isinstance(ac, list):
+                r["acceptanceCriteria"] = " ".join(c.strip() for c in ac if c.strip())
+            elif not isinstance(ac, str):
+                r["acceptanceCriteria"] = ""
         return {"requirements": requirements, "raw_text": text, "extraction_method": "llm"}
     except Exception as ex:
         logger.warning("LLM extraction failed (%s), falling back to rule-based extraction", ex)
@@ -215,6 +242,7 @@ def _rule_based_extract(text: str) -> list:
             "method": method,
             "path": path,
             "summary": f"{method.upper()} {path} — {title}",
+            "acceptanceCriteria": [],
         })
         counter += 1
         if counter > 50:  # cap at 50 requirements
