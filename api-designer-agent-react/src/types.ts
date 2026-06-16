@@ -16,7 +16,7 @@ export interface Requirement {
   path: string;
   summary: string;
   status: 'Draft' | 'Approved' | 'Rejected';
-  acceptanceCriteria?: string[];
+  acceptanceCriteria?: string;
   tags?: string[];
 }
 

@@ -12,10 +12,9 @@ import { config } from './config';
 import {
   extractRequirementsFromDocx, generateOpenApi, generatePostmanCollection,
   generateDataModels, generateSwaggerDocs, fetchAzureStories, fetchJiraStories,
-  fetchConfluenceStories, readExcelColumns, extractRequirementsFromExcel,
+  fetchConfluenceStories, extractRequirementsFromExcel,
 } from './services/documentService';
-import type { AzureConfig, JiraConfig, ConfluenceConfig, ExcelColumnMapping } from './services/documentService';
-import ExcelColumnMapModal from './components/ExcelColumnMapModal';
+import type { AzureConfig, JiraConfig, ConfluenceConfig } from './services/documentService';
 import type { ActivityItem, Requirement } from './types';
 
 export default function App() {
@@ -39,7 +38,6 @@ export default function App() {
   const [lastGeneratedAt, setLastGeneratedAt] = useState('—');
   const [uploading, setUploading] = useState(false);
   const [uploadingExcel, setUploadingExcel] = useState(false);
-  const [excelPending, setExcelPending] = useState<{ file: File; columns: string[]; rows: Record<string, string>[] } | null>(null);
   const [connectingAzure, setConnectingAzure] = useState(false);
   const [connectingJira, setConnectingJira] = useState(false);
   const [connectingConfluence, setConnectingConfluence] = useState(false);
@@ -116,24 +114,12 @@ export default function App() {
     } finally { setConnectingConfluence(false); }
   };
 
+  // Per UI spec: extract_from_excel action — POST /api/excel/extract-requirements with file only
   const handleUploadExcel = async (file: File) => {
-    setToast(`Reading columns from ${file.name}…`);
-    try {
-      const { columns, rows } = await readExcelColumns(file);
-      setExcelPending({ file, columns, rows });
-    } catch (err: unknown) {
-      setToast(err instanceof Error ? err.message : 'Failed to read Excel file');
-    }
-  };
-
-  const handleExcelMappingConfirm = async (mapping: ExcelColumnMapping) => {
-    if (!excelPending) return;
-    const { file, rows } = excelPending;
-    setExcelPending(null);
     setUploadingExcel(true);
     setToast(`Extracting requirements from ${file.name}…`);
     try {
-      const fetched = await extractRequirementsFromExcel(file, rows, mapping);
+      const fetched = await extractRequirementsFromExcel(file);
       mergeRequirements(fetched);
       setSelectedSourceIds((cur) => cur.includes('excel') ? cur : [...cur, 'excel']);
       setToast(`Extracted ${fetched.length} requirements from ${file.name}`);
@@ -366,14 +352,6 @@ export default function App() {
         viewOnly
       />
 
-      {excelPending && (
-        <ExcelColumnMapModal
-          columns={excelPending.columns}
-          filename={excelPending.file.name}
-          onConfirm={handleExcelMappingConfirm}
-          onCancel={() => setExcelPending(null)}
-        />
-      )}
       {uploading && <Loader message="Extracting requirements from document…" />}
       {uploadingExcel && <Loader message="Extracting requirements from spreadsheet…" />}
       {connectingAzure && <Loader message="Fetching stories from Azure DevOps…" />}

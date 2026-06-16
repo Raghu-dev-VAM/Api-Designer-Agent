@@ -10,11 +10,30 @@ async function fetchWithTimeout(input: RequestInfo, init: RequestInit = {}, ms =
   return res;
 }
 
+/** Normalise a raw requirements array from either endpoint to match the Requirement type.
+ *  Workflow spec fields: id, title, desc, source, priority, status, summary, acceptanceCriteria */
+function normaliseRequirements(raw: unknown[]): Requirement[] {
+  return (raw as Array<Record<string, unknown>>).map((r) => {
+    const ac = r.acceptanceCriteria;
+    const acStr = Array.isArray(ac)
+      ? ac.map((c) => String(c).trim()).filter(Boolean).join(' ')
+      : typeof ac === 'string' ? ac : '';
+    return {
+      ...r,
+      desc: (r.desc ?? r.description ?? '') as string,
+      summary: (r.summary ?? '') as string,
+      method: (r.method ?? 'get') as string,
+      path: (r.path ?? '/resource') as string,
+      status: ((r.status ?? 'Draft') as 'Draft' | 'Approved' | 'Rejected'),
+      acceptanceCriteria: acStr,
+    };
+  }) as Requirement[];
+}
+
 export async function extractRequirementsFromDocx(file: File): Promise<{ requirements: Requirement[]; rawText: string }> {
+  // Per UI spec: multipart/form-data with field name "file" only
   const form = new FormData();
   form.append('file', file);
-
-  const rawText = await extractRawText(file);
 
   const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/designer/extract-requirements`, {
     method: 'POST',
@@ -30,10 +49,13 @@ export async function extractRequirementsFromDocx(file: File): Promise<{ require
   }
 
   const data = await res.json();
-  return {
-    requirements: (data.requirements as Requirement[]).map((r) => ({ ...r, status: r.status ?? 'Draft' })),
-    rawText,
-  };
+  // Workflow spec response: { requirements: [{ id, title, desc, source, priority, status, summary, acceptanceCriteria }] }
+  const requirements = normaliseRequirements(data.requirements);
+
+  // Extract raw text client-side for the Raw tab (does not affect API call)
+  const rawText = await extractRawText(file);
+
+  return { requirements, rawText };
 }
 
 async function extractRawText(file: File): Promise<string> {
@@ -203,38 +225,12 @@ export async function fetchConfluenceStories(cfg: ConfluenceConfig): Promise<Req
   return (data.requirements as Requirement[]).map((r) => ({ ...r, status: r.status ?? 'Draft' }));
 }
 
-export interface ExcelColumnMapping {
-  storyId: string;
-  title: string;
-  userStory: string;
-  priority: string;
-  acceptanceCriteria: string;
-  epic: string;
-}
-
-export async function readExcelColumns(file: File): Promise<{ columns: string[]; rows: Record<string, string>[] }> {
-  const XLSX = await import('xlsx');
-  const arrayBuffer = await file.arrayBuffer();
-  const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-  const rows: Record<string, string>[] = [];
-  for (const sheetName of workbook.SheetNames) {
-    const sheet = workbook.Sheets[sheetName];
-    const json = XLSX.utils.sheet_to_json<Record<string, string>>(sheet, { defval: '' });
-    rows.push(...json);
-  }
-  if (rows.length === 0) throw new Error('Spreadsheet appears to be empty.');
-  const columns = Object.keys(rows[0]);
-  return { columns, rows };
-}
-
 export async function extractRequirementsFromExcel(
   file: File,
-  rows: Record<string, string>[],
-  mapping: ExcelColumnMapping
 ): Promise<Requirement[]> {
+  // Per UI spec: multipart/form-data with field name "file" only — no mapping field
   const form = new FormData();
   form.append('file', file);
-  form.append('mapping', JSON.stringify(mapping));
 
   const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/excel/extract-requirements`, {
     method: 'POST',
@@ -247,7 +243,8 @@ export async function extractRequirementsFromExcel(
   }
 
   const data = await res.json();
-  return (data.requirements as Requirement[]).map((r) => ({ ...r, status: r.status ?? 'Draft' }));
+  // Workflow spec response: { requirements: [{ id, title, desc, source, priority, status, summary, acceptanceCriteria }] }
+  return normaliseRequirements(data.requirements);
 }
 
 export async function generateDataModels(openApiYaml: string): Promise<string> {
