@@ -119,7 +119,18 @@ async def extract_requirements_from_document(request: Request, file: Optional[Up
         contents = await file.read()
         with io.BytesIO(contents) as buf:
             doc = docx.Document(buf)
-            text = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+            parts = []
+            # Extract paragraphs
+            for p in doc.paragraphs:
+                if p.text.strip():
+                    parts.append(p.text.strip())
+            # Extract table content (acceptance criteria often live in tables)
+            for table in doc.tables:
+                for row in table.rows:
+                    row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
+                    if row_text:
+                        parts.append(row_text)
+            text = "\n".join(parts)
     except Exception as ex:
         raise HTTPException(status_code=400, detail=f"Failed to read document: {ex}")
 
@@ -128,20 +139,26 @@ async def extract_requirements_from_document(request: Request, file: Optional[Up
 
     prompt = f"""You are a business analyst. Extract structured functional requirements from the following document text.
 
+IMPORTANT: Look carefully for acceptance criteria in any format:
+- "Given / When / Then" style
+- Numbered or bulleted lists under headings like "Acceptance Criteria", "AC:", "Done when:"
+- Table rows with criteria
+- Any conditions or rules that define when a story is complete
+
 Return a JSON array only (no markdown, no explanation) where each item has:
 - id: string like "FR-001"
-- title: short title
-- desc: two-sentence description
+- title: short title for the user story
+- desc: full user story text ("As a... I want... So that...")
 - source: "Uploaded Document"
 - priority: "High", "Medium", or "Low"
 - status: "Draft"
-- method: HTTP method (get, post, put, patch)
+- method: appropriate HTTP method (get, post, put, patch, delete)
 - path: REST API path like /resources/{{id}}
 - summary: one-line API operation summary
-- acceptanceCriteria: array of acceptance criteria strings (empty array [] if none)
+- acceptanceCriteria: array of acceptance criteria strings — MUST be populated if any criteria exist in the document. Do NOT return an empty array if criteria are present.
 
 Document text:
-{text[:6000]}
+{text[:8000]}
 """
     try:
         raw = await _get_groq()._call_groq(prompt)
