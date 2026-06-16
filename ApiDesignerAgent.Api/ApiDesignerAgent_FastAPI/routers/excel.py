@@ -6,7 +6,7 @@ import re
 from typing import Optional, List, Any
 
 import openpyxl
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from dependencies import get_groq_service
@@ -140,7 +140,7 @@ Rows:
         r.setdefault("summary", "")
         r.setdefault("method", "get")
         r.setdefault("path", "/resource")
-        r.setdefault("acceptanceCriteria", [])
+        r.setdefault("acceptanceCriteria", "")
         r.setdefault("status", "Draft")
     return results
 
@@ -184,16 +184,38 @@ def _extract_rows(rows: list, mapping: Optional[ColumnMapping], filename: str) -
             "method":   method,
             "path":     path,
             "summary":  user_story[:120],
-            "acceptanceCriteria": [c.strip() for c in re.split(r"[;\n]+", criteria) if c.strip()] if criteria else [],
+            "acceptanceCriteria": " ".join(c.strip() for c in re.split(r"[;\n]+", criteria) if c.strip()) if criteria else "",
         })
     return requirements
+
+
+@router.post("/columns")
+async def get_excel_columns(
+    request: Request,
+    file: Optional[UploadFile] = File(None),
+):
+    """Return column headers from the uploaded spreadsheet for the column-mapping modal."""
+    if file is None or not file.filename:
+        form = await request.form()
+        for field_value in form.values():
+            if isinstance(field_value, UploadFile) and field_value.filename:
+                file = field_value
+                break
+    if file is None or not file.filename:
+        raise HTTPException(status_code=400, detail="No file uploaded.")
+    ext = "." + file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Invalid file type '{ext}'.")
+    content = await file.read()
+    rows = _parse_file(content, file.filename)
+    columns = list(rows[0].keys()) if rows else []
+    return {"columns": columns}
 
 
 @router.post("/extract-requirements")
 async def extract_requirements_from_excel(
     request: Request,
     file: Optional[UploadFile] = File(None, description="Excel file (.csv or .xlsx)"),
-    mapping: Optional[str] = Form(None, description="Optional JSON column mapping"),
 ):
     # VAM proxy may send the file under a different field name (e.g. excel_file)
     # Fall back to scanning all form fields for the first UploadFile
@@ -218,14 +240,17 @@ async def extract_requirements_from_excel(
     if not rows:
         raise HTTPException(status_code=400, detail="No data rows found in the file.")
 
-    logger.info("Excel upload: %s — %d rows, columns: %s", filename, len(rows), list(rows[0].keys()) if rows else [])
+    logger.info("Excel upload: %s — %d rows", filename, len(rows))
 
+    # Read optional column mapping sent as a JSON string form field
     col_mapping: Optional[ColumnMapping] = None
-    if mapping:
+    form = await request.form()
+    mapping_raw = form.get("mapping")
+    if mapping_raw and isinstance(mapping_raw, str):
         try:
-            col_mapping = ColumnMapping(**json.loads(mapping))
+            col_mapping = ColumnMapping(**json.loads(mapping_raw))
         except Exception:
-            raise HTTPException(status_code=400, detail="Invalid mapping JSON.")
+            pass
 
     requirements = _extract_rows(rows, col_mapping, filename)
 

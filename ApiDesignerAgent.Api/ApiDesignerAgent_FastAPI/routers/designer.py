@@ -242,7 +242,7 @@ def _rule_based_extract(text: str) -> list:
             "method": method,
             "path": path,
             "summary": f"{method.upper()} {path} — {title}",
-            "acceptanceCriteria": [],
+            "acceptanceCriteria": "",
         })
         counter += 1
         if counter > 50:  # cap at 50 requirements

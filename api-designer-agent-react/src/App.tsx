@@ -6,13 +6,15 @@ import PreviewCard from './components/PreviewCard';
 import ArtifactsCard from './components/ArtifactsCard';
 import CodeGenPanel from './components/CodeGenPanel';
 import UserStoryReviewPanel from './components/UserStoryReviewPanel';
+import ExcelColumnMapModal from './components/ExcelColumnMapModal';
+import type { ColumnMapping } from './components/ExcelColumnMapModal';
 import Loader from './components/Loader';
 import { sources } from './data';
 import { config } from './config';
 import {
   extractRequirementsFromDocx, generateOpenApi, generatePostmanCollection,
   generateDataModels, generateSwaggerDocs, fetchAzureStories, fetchJiraStories,
-  fetchConfluenceStories, extractRequirementsFromExcel,
+  fetchConfluenceStories, extractRequirementsFromExcel, previewExcelColumns,
 } from './services/documentService';
 import type { AzureConfig, JiraConfig, ConfluenceConfig } from './services/documentService';
 import type { ActivityItem, Requirement } from './types';
@@ -38,6 +40,8 @@ export default function App() {
   const [lastGeneratedAt, setLastGeneratedAt] = useState('—');
   const [uploading, setUploading] = useState(false);
   const [uploadingExcel, setUploadingExcel] = useState(false);
+  const [excelPendingFile, setExcelPendingFile] = useState<File | null>(null);
+  const [excelColumns, setExcelColumns] = useState<string[]>([]);
   const [connectingAzure, setConnectingAzure] = useState(false);
   const [connectingJira, setConnectingJira] = useState(false);
   const [connectingConfluence, setConnectingConfluence] = useState(false);
@@ -114,12 +118,24 @@ export default function App() {
     } finally { setConnectingConfluence(false); }
   };
 
-  // Per UI spec: extract_from_excel action — POST /api/excel/extract-requirements with file only
+  // Per UI spec: extract_from_excel action — POST /api/excel/extract-requirements with file and optional mapping
   const handleUploadExcel = async (file: File) => {
+    // First fetch column names to show the mapping modal
+    const cols = await previewExcelColumns(file);
+    if (cols.length > 0) {
+      setExcelPendingFile(file);
+      setExcelColumns(cols);
+      return;
+    }
+    // No preview available — extract directly
+    await _doExcelExtract(file);
+  };
+
+  const _doExcelExtract = async (file: File, mapping?: ColumnMapping) => {
     setUploadingExcel(true);
     setToast(`Extracting requirements from ${file.name}…`);
     try {
-      const fetched = await extractRequirementsFromExcel(file);
+      const fetched = await extractRequirementsFromExcel(file, mapping);
       mergeRequirements(fetched);
       setSelectedSourceIds((cur) => cur.includes('excel') ? cur : [...cur, 'excel']);
       setToast(`Extracted ${fetched.length} requirements from ${file.name}`);
@@ -351,6 +367,20 @@ export default function App() {
         onConfirm={handleConfirm}
         viewOnly
       />
+
+      {excelPendingFile && excelColumns.length > 0 && (
+        <ExcelColumnMapModal
+          columns={excelColumns}
+          filename={excelPendingFile.name}
+          onConfirm={(mapping) => {
+            const f = excelPendingFile;
+            setExcelPendingFile(null);
+            setExcelColumns([]);
+            _doExcelExtract(f, mapping);
+          }}
+          onCancel={() => { setExcelPendingFile(null); setExcelColumns([]); }}
+        />
+      )}
 
       {uploading && <Loader message="Extracting requirements from document…" />}
       {uploadingExcel && <Loader message="Extracting requirements from spreadsheet…" />}

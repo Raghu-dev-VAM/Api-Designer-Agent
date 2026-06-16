@@ -86,7 +86,7 @@ export default function SourcesCard({
           })}
 
           <input ref={fileInputRef} type="file" accept=".docx" style={{ display: 'none' }} onChange={handleFileChange} />
-          <input ref={excelInputRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) onUploadExcel(f); e.target.value = ''; }} />
+          <input ref={excelInputRef} type="file" accept=".xlsx,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) onUploadExcel(f); e.target.value = ''; }} />
           <button className={`source-item ${uploading ? '' : selectedSourceIds.includes('docx') ? 'selected' : ''}`} onClick={() => fileInputRef.current?.click()} disabled={uploading}>
             <span className="source-icon" style={{ background: '#f3e8ff' }}><Icon name={uploading ? 'refresh' : 'file'} /></span>
             <span>

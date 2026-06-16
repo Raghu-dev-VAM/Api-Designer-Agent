@@ -225,12 +225,22 @@ export async function fetchConfluenceStories(cfg: ConfluenceConfig): Promise<Req
   return (data.requirements as Requirement[]).map((r) => ({ ...r, status: r.status ?? 'Draft' }));
 }
 
+export interface ExcelColumnMapping {
+  storyId: string;
+  title: string;
+  userStory: string;
+  priority: string;
+  acceptanceCriteria: string;
+  epic: string;
+}
+
 export async function extractRequirementsFromExcel(
   file: File,
+  mapping?: ExcelColumnMapping,
 ): Promise<Requirement[]> {
-  // Per UI spec: multipart/form-data with field name "file" only — no mapping field
   const form = new FormData();
   form.append('file', file);
+  if (mapping) form.append('mapping', JSON.stringify(mapping));
 
   const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/excel/extract-requirements`, {
     method: 'POST',
@@ -243,8 +253,21 @@ export async function extractRequirementsFromExcel(
   }
 
   const data = await res.json();
-  // Workflow spec response: { requirements: [{ id, title, desc, source, priority, status, summary, acceptanceCriteria }] }
   return normaliseRequirements(data.requirements);
+}
+
+export async function previewExcelColumns(file: File): Promise<string[]> {
+  const form = new FormData();
+  form.append('file', file);
+
+  const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/excel/columns`, {
+    method: 'POST',
+    body: form,
+  });
+
+  if (!res.ok) return [];
+  const data = await res.json();
+  return data.columns as string[];
 }
 
 export async function generateDataModels(openApiYaml: string): Promise<string> {
