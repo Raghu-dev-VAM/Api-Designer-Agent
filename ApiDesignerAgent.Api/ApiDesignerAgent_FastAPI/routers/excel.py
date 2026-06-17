@@ -6,7 +6,7 @@ import re
 from typing import Optional, List, Any
 
 import openpyxl
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
 from dependencies import get_groq_service
@@ -83,7 +83,6 @@ class ColumnMapping(BaseModel):
     userStory: Optional[str] = ""
     priority: Optional[str] = ""
     acceptanceCriteria: Optional[str] = ""
-    epic: Optional[str] = ""
 
 
 class ExcelExtractRequest(BaseModel):
@@ -153,18 +152,16 @@ def _extract_rows(rows: list, mapping: Optional[ColumnMapping], filename: str) -
         m = mapping
         if m and m.userStory:
             story_id   = str(row.get(m.storyId, "")).strip()   if m.storyId   else ""
-            epic       = str(row.get(m.epic, "")).strip()       if m.epic       else ""
             user_story = str(row.get(m.userStory, "")).strip()
             priority   = str(row.get(m.priority, "")).strip()   if m.priority   else ""
             criteria   = str(row.get(m.acceptanceCriteria, "")).strip() if m.acceptanceCriteria else ""
             title_val  = str(row.get(m.title, "")).strip()      if m.title      else ""
         else:
             story_id   = _find(row, ["story id", "storyid", "story_id"]) or f"FR-{i + 1:03d}"
-            epic       = _find(row, ["epic"])
             user_story = _find(row, ["user story", "user story (", "as a ", "description"])
             priority   = _find(row, ["priority"])
             criteria   = _find(row, ["acceptance criteria", "acceptance_criteria", "criteria"])
-            title_val  = epic
+            title_val  = _find(row, ["title", "name"])
 
         story_id = story_id or f"FR-{i + 1:03d}"
         if not user_story:
@@ -215,10 +212,27 @@ async def get_excel_columns(
 @router.post("/extract-requirements")
 async def extract_requirements_from_excel(
     request: Request,
-    file: Optional[UploadFile] = File(None, description="Excel file (.csv or .xlsx)"),
+    file: Optional[UploadFile] = File(None, description="Excel or CSV file (.xlsx or .csv)"),
+    storyId: Optional[str]            = Form(None, description="Column name for Story ID"),
+    title: Optional[str]              = Form(None, description="Column name for Title"),
+    userStory: Optional[str]          = Form(None, description="Column name for User Story text (required for mapping)"),
+    priority: Optional[str]           = Form(None, description="Column name for Priority"),
+    acceptanceCriteria: Optional[str] = Form(None, description="Column name for Acceptance Criteria"),
 ):
-    # VAM proxy may send the file under a different field name (e.g. excel_file)
-    # Fall back to scanning all form fields for the first UploadFile
+    """
+    Extract requirements from an Excel/CSV file.
+
+    Accepts **multipart/form-data** with:
+    - `file` — the .xlsx or .csv file
+    - `userStory` — column name for the user story text (**required**)
+    - `storyId` — column name for the story ID (optional)
+    - `title` — column name for the title (optional)
+    - `priority` — column name for priority (optional)
+    - `acceptanceCriteria` — column name for acceptance criteria (optional)
+
+    If no mapping is provided, auto-detection is used. If auto-detection also fails, Groq AI extracts requirements.
+    """
+    # ── Resolve file ──────────────────────────────────────────────────────────
     if file is None or not file.filename:
         form = await request.form()
         for field_value in form.values():
@@ -227,6 +241,7 @@ async def extract_requirements_from_excel(
                 break
     if file is None or not file.filename:
         raise HTTPException(status_code=400, detail="No file uploaded. Please upload a .xlsx or .csv file in the 'file' field.")
+
     filename = file.filename or "spreadsheet"
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in ALLOWED_EXTENSIONS:
@@ -240,17 +255,21 @@ async def extract_requirements_from_excel(
     if not rows:
         raise HTTPException(status_code=400, detail="No data rows found in the file.")
 
-    logger.info("Excel upload: %s — %d rows", filename, len(rows))
+    logger.info("Excel upload: %s — %d rows, columns: %s", filename, len(rows), list(rows[0].keys()))
 
-    # Read optional column mapping sent as a JSON string form field
+    # ── Resolve column mapping ────────────────────────────────────────────────
+    # Priority: individual Form fields > mapping JSON string > auto-detect
     col_mapping: Optional[ColumnMapping] = None
-    form = await request.form()
-    mapping_raw = form.get("mapping")
-    if mapping_raw and isinstance(mapping_raw, str):
-        try:
-            col_mapping = ColumnMapping(**json.loads(mapping_raw))
-        except Exception:
-            pass
+
+    if userStory:
+        col_mapping = ColumnMapping(
+            storyId=storyId or "",
+            title=title or "",
+            userStory=userStory,
+            priority=priority or "",
+            acceptanceCriteria=acceptanceCriteria or "",
+        )
+        logger.info("Using column mapping: userStory=%s", userStory)
 
     requirements = _extract_rows(rows, col_mapping, filename)
 
@@ -264,7 +283,13 @@ async def extract_requirements_from_excel(
     if not requirements:
         raise HTTPException(
             status_code=400,
-            detail="No user stories found. Ensure the sheet has a 'User Story' column or provide a column mapping via the modal."
+            detail="No user stories found. Ensure the sheet has a 'User Story' column or provide a column mapping."
         )
 
-    return {"requirements": requirements}
+    return {
+        "requirements": requirements,
+        "total": len(requirements),
+        "filename": filename,
+        "mapping_used": col_mapping.model_dump() if col_mapping else None,
+        "columns_detected": list(rows[0].keys()),
+    }

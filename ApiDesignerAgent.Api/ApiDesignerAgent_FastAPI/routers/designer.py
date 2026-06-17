@@ -98,33 +98,127 @@ async def get_artifact(request: ArtifactRequest):
 
 @router.post("/extract-requirements")
 async def extract_requirements_from_document(request: Request, file: Optional[UploadFile] = File(None)):
-    # VAM proxy may send the file under a different field name (e.g. word_file)
     # Fall back to scanning all form fields for the first UploadFile
+    form = await request.form()
     if file is None or not file.filename:
-        form = await request.form()
         for field_value in form.values():
             if isinstance(field_value, UploadFile) and field_value.filename:
                 file = field_value
                 break
     if file is None or not file.filename:
-        raise HTTPException(status_code=400, detail="No file uploaded. Please upload a .docx file in the 'file' field.")
-    if not file.filename.lower().endswith(".docx"):
-        raise HTTPException(status_code=400, detail="Only .docx files are supported.")
+        raise HTTPException(status_code=400, detail="No file uploaded. Please upload a .docx or .xlsx file.")
+
+    fname = file.filename.lower()
+    is_excel = fname.endswith(".xlsx") or fname.endswith(".xls")
+    is_docx = fname.endswith(".docx")
+    if not is_excel and not is_docx:
+        raise HTTPException(status_code=400, detail="Only .docx, .xlsx, and .xls files are supported.")
+
+    contents = await file.read()
+
+    # ── Excel path ────────────────────────────────────────────────────────────
+    if is_excel:
+        # Column mapping: caller may pass JSON like
+        # {"storyId":"ID","title":"Story Title","userStory":"Description",
+        #  "priority":"Priority","acceptanceCriteria":"AC"}
+        mapping_raw = form.get("columnMapping") or form.get("column_mapping") or "{}"
+        try:
+            col_map: dict = json.loads(mapping_raw) if isinstance(mapping_raw, str) else {}
+        except Exception:
+            col_map = {}
+
+        # userStory mapping is required for Excel uploads
+        if not col_map.get("userStory"):
+            raise HTTPException(
+                status_code=400,
+                detail="columnMapping.userStory is required for Excel uploads. "
+                       "Provide the exact Excel column header that contains the user story text."
+            )
+
+        try:
+            import openpyxl
+        except ImportError:
+            raise HTTPException(status_code=500, detail="openpyxl is not installed on the server.")
+
+        try:
+            with io.BytesIO(contents) as buf:
+                wb = openpyxl.load_workbook(buf, read_only=True, data_only=True)
+                ws = wb.active
+                rows = list(ws.iter_rows(values_only=True))
+                wb.close()
+        except Exception as ex:
+            raise HTTPException(status_code=400, detail=f"Failed to read Excel file: {ex}")
+
+        if not rows:
+            raise HTTPException(status_code=400, detail="Excel file appears to be empty.")
+
+        headers = [str(h).strip() if h is not None else "" for h in rows[0]]
+
+        def _find_col(candidates: list[str]) -> int:
+            for name in candidates:
+                mapped = col_map.get(name, "")
+                if mapped and mapped in headers:
+                    return headers.index(mapped)
+            for name in candidates:
+                for i, h in enumerate(headers):
+                    if h.lower() == name.lower():
+                        return i
+            return -1
+
+        idx = {
+            "storyId":            _find_col(["storyId", "id", "story id", "story_id"]),
+            "title":              _find_col(["title", "story title", "name"]),
+            "userStory":          _find_col(["userStory", "user story", "description", "desc"]),
+            "priority":           _find_col(["priority"]),
+            "acceptanceCriteria": _find_col(["acceptanceCriteria", "acceptance criteria", "ac", "criteria"]),
+        }
+
+        # Validate the required userStory column resolved to an actual header
+        if idx["userStory"] == -1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Column '{col_map['userStory']}' specified in columnMapping.userStory "
+                       f"was not found in the Excel headers: {headers}"
+            )
+
+        def _cell(row: tuple, key: str) -> str:
+            i = idx[key]
+            return str(row[i]).strip() if i >= 0 and i < len(row) and row[i] is not None else ""
+
+        requirements = []
+        for row_num, row in enumerate(rows[1:], start=1):
+            user_story = _cell(row, "userStory")
+            if not user_story:
+                continue  # skip rows with no user story value
+            title = _cell(row, "title")
+            requirements.append({
+                "id":                 _cell(row, "storyId") or f"FR-{row_num:03d}",
+                "title":              title,
+                "desc":               user_story,
+                "source":             "Uploaded Excel",
+                "priority":           _cell(row, "priority") or "Medium",
+                "status":             "Draft",
+                "method":             "get",
+                "path":               "/resource",
+                "summary":            title,
+                "acceptanceCriteria": _cell(row, "acceptanceCriteria"),
+            })
+
+        return {"requirements": requirements, "extraction_method": "excel", "column_indices": idx}
+
+    # ── Word (.docx) path ─────────────────────────────────────────────────────
     try:
         import docx
     except ImportError:
         raise HTTPException(status_code=500, detail="python-docx is not installed on the server.")
 
     try:
-        contents = await file.read()
         with io.BytesIO(contents) as buf:
             doc = docx.Document(buf)
             parts = []
-            # Extract paragraphs
             for p in doc.paragraphs:
                 if p.text.strip():
                     parts.append(p.text.strip())
-            # Extract table content (acceptance criteria often live in tables)
             for table in doc.tables:
                 for row in table.rows:
                     row_text = " | ".join(cell.text.strip() for cell in row.cells if cell.text.strip())
@@ -165,7 +259,6 @@ Document text:
         cleaned = _clean_json(raw)
         requirements = json.loads(cleaned)
         for r in requirements:
-            # Normalise: LLM may return "description" — frontend expects "desc"
             if "desc" not in r and "description" in r:
                 r["desc"] = r.pop("description")
             r.setdefault("desc", "")
@@ -173,7 +266,6 @@ Document text:
             r.setdefault("method", "get")
             r.setdefault("path", "/resource")
             r.setdefault("status", "Draft")
-            # Join acceptance criteria into a single paragraph
             ac = r.get("acceptanceCriteria", [])
             if isinstance(ac, list):
                 r["acceptanceCriteria"] = " ".join(c.strip() for c in ac if c.strip())
