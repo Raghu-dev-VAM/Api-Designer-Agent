@@ -361,19 +361,21 @@ def _rule_based_extract(text: str) -> list:
 
 
 def _clean_json(raw: str) -> str:
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[-1]
-        cleaned = cleaned.rsplit("```", 1)[0].strip()
-    return cleaned
+    import re
+    t = raw.strip()
+    t = re.sub(r'^```[a-zA-Z]*[ \t]*\r?\n?', '', t)
+    t = re.sub(r'\r?\n```[a-zA-Z]*[ \t]*(?=\r?\n|$)', '', t)
+    t = re.sub(r'^```[a-zA-Z]*[ \t]*$', '', t, flags=re.MULTILINE)
+    return t.strip()
 
 
 def _clean_yaml(raw: str) -> str:
-    cleaned = raw.strip()
-    if cleaned.startswith("```"):
-        cleaned = cleaned.split("\n", 1)[-1]
-        cleaned = cleaned.rsplit("```", 1)[0].strip()
-    return cleaned
+    import re
+    t = raw.strip()
+    t = re.sub(r'^```[a-zA-Z]*[ \t]*\r?\n?', '', t)
+    t = re.sub(r'\r?\n```[a-zA-Z]*[ \t]*(?=\r?\n|$)', '', t)
+    t = re.sub(r'^```[a-zA-Z]*[ \t]*$', '', t, flags=re.MULTILINE)
+    return t.strip()
 
 
 @router.post("/swagger-docs")

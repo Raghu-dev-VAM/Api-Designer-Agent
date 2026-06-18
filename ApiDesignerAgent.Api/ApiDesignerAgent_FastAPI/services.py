@@ -23,12 +23,14 @@ logger = logging.getLogger(__name__)
 
 
 def _strip_fences(text: str) -> str:
-    """Remove markdown code fences from any LLM response."""
+    """Remove ALL markdown code fences from any LLM response."""
+    import re
     t = text.strip()
-    if t.startswith("```"):
-        t = t.split("\n", 1)[-1]
-    if t.endswith("```"):
-        t = t.rsplit("```", 1)[0]
+    # Remove opening fence line: ```yaml ```yml ```json ``` etc.
+    t = re.sub(r'^```[a-zA-Z]*[ \t]*\r?\n?', '', t)
+    # Remove every remaining ``` line anywhere (closing or mid-text)
+    t = re.sub(r'\r?\n```[a-zA-Z]*[ \t]*(?=\r?\n|$)', '', t)
+    t = re.sub(r'^```[a-zA-Z]*[ \t]*$', '', t, flags=re.MULTILINE)
     return t.strip()
 
 # ── Retry / fallback constants ─────────────────────────────────────────────────
@@ -180,15 +182,12 @@ Output ONLY the Markdown, no extra commentary.
 
     @staticmethod
     def _clean_yaml(raw: str) -> str:
-        """Strip markdown fences from LLM YAML responses."""
-        cleaned = raw.strip()
-        # Remove opening fence: ```yaml, ```yml, ```
-        if cleaned.startswith("```"):
-            cleaned = cleaned.split("\n", 1)[-1]
-        # Remove closing fence
-        if cleaned.endswith("```"):
-            cleaned = cleaned.rsplit("```", 1)[0]
-        return cleaned.strip()
+        import re
+        t = raw.strip()
+        t = re.sub(r'^```[a-zA-Z]*[ \t]*\r?\n?', '', t)
+        t = re.sub(r'\r?\n```[a-zA-Z]*[ \t]*(?=\r?\n|$)', '', t)
+        t = re.sub(r'^```[a-zA-Z]*[ \t]*$', '', t, flags=re.MULTILINE)
+        return t.strip()
 
     # ── Core resilient call ────────────────────────────────────────────────────
     async def _call_groq(self, prompt: str) -> str:
