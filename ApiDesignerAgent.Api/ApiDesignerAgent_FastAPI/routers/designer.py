@@ -4,10 +4,11 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+import yaml as pyyaml
 from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 
 from models import (
-    GenerateRequest, GenerateResponse,
+    GenerateRequest, GenerateResponse, Requirement,
     ValidateRequest, ValidateResponse,
     ArtifactRequest,
 )
@@ -27,44 +28,131 @@ def _get_python():
 
 @router.post("/generate", response_model=GenerateResponse)
 async def generate_openapi(request: GenerateRequest):
-    if not request.requirements:
-        raise HTTPException(status_code=400, detail="At least one requirement is required.")
+    # Resolve requirements from raw_input if provided
+    if request.raw_input and request.raw_input.strip():
+        request = _inject_raw_input(request)
 
-    # Process Draft and Approved — skip only explicitly Rejected
+    if not request.requirements:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either 'requirements' array or 'raw_input' (JSON / YAML / plain text)."
+        )
+
+    # Normalise output_format
+    # None / omitted  → both
+    # 'yaml'          → YAML only
+    # 'json'          → JSON only
+    fmt = (request.output_format or "").strip().lower() or "both"
+    if fmt not in ("yaml", "json", "both"):
+        raise HTTPException(status_code=400, detail="output_format must be 'yaml', 'json', or omitted (both).")
+
     to_process = [r for r in request.requirements if (r.status or "Draft").lower() != "rejected"]
     if not to_process:
-        raise HTTPException(status_code=400, detail="All requirements are rejected. Approve or set at least one to Draft to generate.")
+        raise HTTPException(status_code=400, detail="All requirements are rejected.")
 
-    logger.info(
-        "Generating OpenAPI for %d requirement(s): %s",
-        len(to_process),
-        [(r.id, r.status or 'Draft') for r in to_process],
-    )
+    logger.info("Generating OpenAPI (format=%s) for %d requirement(s)", fmt, len(to_process))
 
-    generate_request = GenerateRequest(
-        requirements=to_process,
-        api_title=request.api_title,
-        api_version=request.api_version,
-    )
     try:
-        yaml_raw = await _get_groq().generate_openapi(generate_request)
-        yaml_clean = _clean_yaml(yaml_raw)
-        summary = await _get_groq().generate_summary(yaml_clean)
-        json_spec = _get_python().convert_yaml_to_json(yaml_clean)
-        return GenerateResponse(
-            open_api_yaml=yaml_clean,
-            open_api_json=json_spec,
-            summary=summary,
-            generated_at=datetime.now(timezone.utc).isoformat(),
+        yaml_raw   = await _get_groq().generate_openapi(
+            GenerateRequest(requirements=to_process,
+                            api_title=request.api_title,
+                            api_version=request.api_version)
         )
+        yaml_clean = _clean_yaml(yaml_raw)
+        summary    = await _get_groq().generate_summary(yaml_clean)
+
+        # Build response based on requested format
+        if fmt == "yaml":
+            return GenerateResponse(
+                open_api_yaml=yaml_clean,
+                open_api_json=None,
+                output_format="yaml",
+                summary=summary,
+                generated_at=datetime.now(timezone.utc).isoformat(),
+            )
+        elif fmt == "json":
+            json_spec = _get_python().convert_yaml_to_json(yaml_clean)
+            return GenerateResponse(
+                open_api_yaml=None,
+                open_api_json=json_spec,
+                output_format="json",
+                summary=summary,
+                generated_at=datetime.now(timezone.utc).isoformat(),
+            )
+        else:  # both
+            json_spec = _get_python().convert_yaml_to_json(yaml_clean)
+            return GenerateResponse(
+                open_api_yaml=yaml_clean,
+                open_api_json=json_spec,
+                output_format="both",
+                summary=summary,
+                generated_at=datetime.now(timezone.utc).isoformat(),
+            )
+
     except Exception as ex:
         logger.error("Generate failed: %s", ex)
         msg = str(ex)
         if "Invalid API Key" in msg or "invalid_api_key" in msg:
-            raise HTTPException(status_code=503, detail="LLM service unavailable: Groq API key is invalid or expired. Please update GROQ_API_KEY in .env")
+            raise HTTPException(status_code=503, detail="LLM service unavailable: invalid or expired Groq API key.")
         if "All LLM providers" in msg:
-            raise HTTPException(status_code=503, detail="LLM service temporarily unavailable. Please try again shortly or check your API keys.")
+            raise HTTPException(status_code=503, detail="LLM service temporarily unavailable. Please try again.")
         raise HTTPException(status_code=500, detail=msg)
+
+
+# ── raw_input helpers ─────────────────────────────────────────────────────────
+
+def _inject_raw_input(request: GenerateRequest) -> GenerateRequest:
+    """Parse raw_input (JSON / YAML / plain text) into Requirement objects."""
+    raw  = request.raw_input.strip()
+    reqs: list[Requirement] = []
+
+    # Try JSON
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            reqs = [_dict_to_req(i, d) for i, d in enumerate(parsed)]
+        elif isinstance(parsed, dict):
+            reqs = [_dict_to_req(0, parsed)]
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Try YAML
+    if not reqs:
+        try:
+            parsed = pyyaml.safe_load(raw)
+            if isinstance(parsed, list):
+                reqs = [_dict_to_req(i, d) for i, d in enumerate(parsed) if isinstance(d, dict)]
+            elif isinstance(parsed, dict):
+                reqs = [_dict_to_req(0, parsed)]
+        except Exception:
+            pass
+
+    # Plain text fallback
+    if not reqs:
+        reqs = [Requirement(
+            id="R-001", title=request.api_title or "Requirement",
+            description=raw[:2000], source="raw_input",
+            priority="Medium", status="Draft",
+        )]
+
+    return GenerateRequest(
+        requirements=reqs,
+        api_title=request.api_title,
+        api_version=request.api_version,
+        output_format=request.output_format,
+    )
+
+
+def _dict_to_req(index: int, d: dict) -> Requirement:
+    seq = f"{index + 1:03d}"
+    return Requirement(
+        id=str(d.get("id") or d.get("storyId") or f"R-{seq}"),
+        title=str(d.get("title") or d.get("name") or d.get("summary") or f"Requirement {seq}"),
+        description=str(d.get("description") or d.get("desc") or d.get("userStory") or ""),
+        source=str(d.get("source") or "raw_input"),
+        priority=str(d.get("priority") or "Medium"),
+        status=str(d.get("status") or "Draft"),
+    )
 
 
 @router.post("/validate", response_model=ValidateResponse)

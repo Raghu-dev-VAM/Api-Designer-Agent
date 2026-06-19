@@ -31,32 +31,49 @@ class Requirement(BaseModel):
 
 
 class GenerateRequest(BaseModel):
-    requirements: List[Requirement] = Field(..., description="List of functional requirements")
+    requirements: Optional[List[Requirement]] = Field(default=None, description="List of functional requirements")
     api_title: Optional[str] = Field(default="Generated API", description="Title for the generated API")
     api_version: Optional[str] = Field(default="1.0.0", description="Version of the generated API")
+    output_format: Optional[str] = Field(
+        default=None,
+        description="Output format: 'yaml' → YAML only, 'json' → JSON only, omit → both formats returned."
+    )
+    raw_input: Optional[str] = Field(
+        default=None,
+        description=(
+            "Free-form JSON array, YAML block, or plain text description of requirements. "
+            "When provided, the 'requirements' field is optional."
+        )
+    )
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
+            "api_title": "My API",
+            "api_version": "1.0.0",
+            "output_format": "yaml",
             "requirements": [{
-                "id": "REQ-001", "title": "User Authentication",
+                "id": "REQ-001",
+                "title": "User Authentication",
                 "description": "API should support JWT-based user authentication",
-                "source": "Product Requirements", "priority": "High"
-            }],
-            "api_title": "My API", "api_version": "1.0.0"
+                "source": "Product Requirements",
+                "priority": "High"
+            }]
         }
     })
 
 
 class GenerateResponse(BaseModel):
-    open_api_yaml: str = Field(..., description="Generated OpenAPI specification in YAML format")
-    open_api_json: str = Field(..., description="Generated OpenAPI specification in JSON format")
+    open_api_yaml: Optional[str] = Field(default=None, description="YAML spec — present when output_format is 'yaml' or not specified")
+    open_api_json: Optional[str] = Field(default=None, description="JSON spec — present when output_format is 'json' or not specified")
+    output_format: str = Field(default="both", description="Format returned: 'yaml', 'json', or 'both'")
     summary: str = Field(..., description="Human-readable summary of the generated API")
     generated_at: str = Field(..., description="ISO timestamp of generation")
 
     model_config = ConfigDict(json_schema_extra={
         "example": {
             "open_api_yaml": "openapi: 3.0.3\ninfo:\n  title: My API\n  version: 1.0.0",
-            "open_api_json": '{"openapi": "3.0.3", "info": {"title": "My API", "version": "1.0.0"}}',
+            "open_api_json": None,
+            "output_format": "yaml",
             "summary": "# My API\n\n## Endpoints\n\n- GET /users - Get all users",
             "generated_at": "2024-01-01T12:00:00"
         }
