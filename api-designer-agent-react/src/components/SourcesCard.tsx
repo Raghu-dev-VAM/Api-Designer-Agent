@@ -13,36 +13,30 @@ interface SourcesCardProps {
   onToggle: (id: string) => void;
   onAddSource: () => void;
   onSync: () => void;
-  onUploadDocx: (file: File) => void;
+  onUploadFile: (file: File) => void;
   uploading: boolean;
   onConnectAzure: (cfg: AzureConfig) => void;
   onConnectJira: (cfg: JiraConfig) => void;
   onConnectConfluence: (cfg: ConfluenceConfig) => void;
   connectingSource: ConnectableSource | null;
-  onUploadExcel: (file: File) => void;
-  uploadingExcel: boolean;
 }
 
 export default function SourcesCard({
-  selectedSourceIds, onToggle, onAddSource, onSync, onUploadDocx, uploading,
+  selectedSourceIds, onToggle, onAddSource, onSync, onUploadFile, uploading,
   onConnectAzure, onConnectJira, onConnectConfluence, connectingSource,
-  onUploadExcel, uploadingExcel,
 }: SourcesCardProps) {
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const excelInputRef = useRef<HTMLInputElement>(null);
   const [activeModal, setActiveModal] = useState<ConnectableSource | null>(null);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) onUploadDocx(file);
+    if (file) onUploadFile(file);
     e.target.value = '';
   };
 
   const handleSourceClick = (id: string) => {
     if (CONNECTABLE.includes(id as ConnectableSource)) {
       setActiveModal(id as ConnectableSource);
-    } else if (id === 'excel') {
-      excelInputRef.current?.click();
     } else {
       onToggle(id);
     }
@@ -63,35 +57,43 @@ export default function SourcesCard({
           {sources.map((source) => {
             const isConnectable = CONNECTABLE.includes(source.id as ConnectableSource);
             const isConnected = selectedSourceIds.includes(source.id);
-            const isExcel = source.id === 'excel';
             return (
               <button
                 className={`source-item ${isConnected ? 'selected' : ''}`}
                 key={source.id}
                 onClick={() => handleSourceClick(source.id)}
-                disabled={isExcel && uploadingExcel}
               >
-                <span className="source-icon" style={{ background: source.color }}><Icon name={isExcel && uploadingExcel ? 'refresh' : source.icon} /></span>
+                <span className="source-icon" style={{ background: source.color }}><Icon name={source.icon} /></span>
                 <span>
-                  <strong>{isExcel && uploadingExcel ? 'Extracting…' : source.name}</strong>
-                  <small>{isConnectable ? 'Click to connect & fetch stories' : isExcel ? 'Click to upload .xlsx or .csv' : source.desc}</small>
+                  <strong>{source.name}</strong>
+                  <small>{isConnectable ? 'Click to connect & fetch stories' : source.desc}</small>
                 </span>
                 {isConnectable
                   ? <span className="source-connect-hint"><Icon name="plug" size={12} />{isConnected ? 'Connected' : 'Connect'}</span>
-                  : isExcel
-                    ? <span className="source-connect-hint" style={{ color: '#047857', borderColor: '#a7f3d0', background: '#ecfdf5' }}><Icon name="folder" size={12} />Upload</span>
-                    : <span className="source-check"><Icon name="check" size={13} /></span>}
+                  : <span className="source-check"><Icon name="check" size={13} /></span>}
               </button>
             );
           })}
 
-          <input ref={fileInputRef} type="file" accept=".docx" style={{ display: 'none' }} onChange={handleFileChange} />
-          <input ref={excelInputRef} type="file" accept=".xlsx,.csv" style={{ display: 'none' }} onChange={(e) => { const f = e.target.files?.[0]; if (f) onUploadExcel(f); e.target.value = ''; }} />
-          <button className={`source-item ${uploading ? '' : selectedSourceIds.includes('docx') ? 'selected' : ''}`} onClick={() => fileInputRef.current?.click()} disabled={uploading}>
-            <span className="source-icon" style={{ background: '#f3e8ff' }}><Icon name={uploading ? 'refresh' : 'file'} /></span>
+          {/* Single unified upload button for Word + Excel/CSV */}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".docx,.xlsx,.csv"
+            style={{ display: 'none' }}
+            onChange={handleFileChange}
+          />
+          <button
+            className={`source-item ${uploading ? '' : selectedSourceIds.includes('docx') ? 'selected' : ''}`}
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+          >
+            <span className="source-icon" style={{ background: '#f3e8ff' }}>
+              <Icon name={uploading ? 'refresh' : 'file'} />
+            </span>
             <span>
-              <strong>{uploading ? 'Extracting…' : 'Word Document'}</strong>
-              <small>{uploading ? 'Processing with GROQ AI' : 'Upload .docx to extract requirements'}</small>
+              <strong>{uploading ? 'Extracting…' : 'Upload Document'}</strong>
+              <small>{uploading ? 'Processing…' : 'Upload .docx, .xlsx or .csv'}</small>
             </span>
             <span className="source-connect-hint" style={{ color: '#7c3aed', borderColor: '#c4b5fd', background: '#f5f3ff' }}>
               <Icon name="folder" size={12} />{uploading ? 'Loading' : 'Upload'}

@@ -4,7 +4,6 @@ export const sources: Source[] = [
   { id: 'azure', name: 'Azure DevOps', desc: 'Boards / Wiki / PRD', color: '#dbeafe', icon: 'azure' },
   { id: 'jira', name: 'Jira', desc: 'Stories / Epics', color: '#e0f2fe', icon: 'diamond' },
   { id: 'confluence', name: 'Confluence', desc: 'Pages / Docs', color: '#dbeafe', icon: 'waves' },
-  { id: 'excel', name: 'Excel / CSV', desc: '.xlsx, .csv', color: '#dcfce7', icon: 'sheet' }
 ];
 
 export const requirements: Requirement[] = [];

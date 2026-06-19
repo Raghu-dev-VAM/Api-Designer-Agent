@@ -13,7 +13,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
 
 from config import settings
-from routers import designer, azure, jira, confluence, excel, codegen
+from routers import designer, azure, jira, confluence, excel, codegen, documents
 
 logging.basicConfig(level=logging.INFO)
 
@@ -21,6 +21,10 @@ TAGS_METADATA = [
     {
         "name": "designer",
         "description": "Generate, validate and export OpenAPI specifications from functional requirements using Groq AI.",
+    },
+    {
+        "name": "documents",
+        "description": "Unified endpoint to extract user stories from Word (.docx) or Excel/CSV files.",
     },
     {
         "name": "excel",
@@ -84,6 +88,7 @@ app.include_router(jira.router)
 app.include_router(confluence.router)
 app.include_router(excel.router)
 app.include_router(codegen.router)
+app.include_router(documents.router)
 
 
 @app.get("/api/health", tags=["health"])

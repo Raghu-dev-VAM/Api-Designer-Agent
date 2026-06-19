@@ -30,33 +30,7 @@ function normaliseRequirements(raw: unknown[]): Requirement[] {
   }) as Requirement[];
 }
 
-export async function extractRequirementsFromDocx(file: File): Promise<{ requirements: Requirement[]; rawText: string }> {
-  // Per UI spec: multipart/form-data with field name "file" only
-  const form = new FormData();
-  form.append('file', file);
 
-  const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/designer/extract-requirements`, {
-    method: 'POST',
-    body: form,
-  });
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Request failed' }));
-    const detail = typeof err.detail === 'string'
-      ? err.detail.replace(/[\r\n]/g, ' ')
-      : 'Failed to extract requirements';
-    throw new Error(detail);
-  }
-
-  const data = await res.json();
-  // Workflow spec response: { requirements: [{ id, title, desc, source, priority, status, summary, acceptanceCriteria }] }
-  const requirements = normaliseRequirements(data.requirements);
-
-  // Extract raw text client-side for the Raw tab (does not affect API call)
-  const rawText = await extractRawText(file);
-
-  return { requirements, rawText };
-}
 
 async function extractRawText(file: File): Promise<string> {
   try {
@@ -70,16 +44,24 @@ async function extractRawText(file: File): Promise<string> {
 }
 
 export async function generateOpenApi(requirement: Requirement): Promise<{ yaml: string }> {
+  // Sanitise all string fields — strip control characters that cause JSON 422
+  const clean = (s: string) => (s ?? '').replace(/[\x00-\x1F\x7F]/g, ' ').trim();
+
   const body = {
     requirements: [{
-      id: requirement.id,
-      title: requirement.title,
-      description: `${requirement.desc}${requirement.summary ? ` Summary: ${requirement.summary}` : ''}${requirement.method ? ` HTTP Method: ${requirement.method.toUpperCase()}` : ''}${requirement.path ? ` Path: ${requirement.path}` : ''}`,
-      source: requirement.source,
-      priority: requirement.priority,
+      id: clean(requirement.id),
+      title: clean(requirement.title),
+      description: clean(
+        `${requirement.desc}` +
+        `${requirement.summary ? ` Summary: ${requirement.summary}` : ''}` +
+        `${requirement.method ? ` HTTP Method: ${requirement.method.toUpperCase()}` : ''}` +
+        `${requirement.path ? ` Path: ${requirement.path}` : ''}`
+      ),
+      source: clean(requirement.source),
+      priority: clean(requirement.priority),
       status: requirement.status ?? 'Draft',
     }],
-    api_title: requirement.title,
+    api_title: clean(requirement.title),
     api_version: '1.0.0',
   };
 
@@ -225,49 +207,63 @@ export async function fetchConfluenceStories(cfg: ConfluenceConfig): Promise<Req
   return (data.requirements as Requirement[]).map((r) => ({ ...r, status: r.status ?? 'Draft' }));
 }
 
-export interface ExcelColumnMapping {
+export interface ColumnMapping {
+  userStory: string;
   storyId: string;
   title: string;
-  userStory: string;
   priority: string;
   acceptanceCriteria: string;
-  epic: string;
 }
 
-export async function extractRequirementsFromExcel(
+/**
+ * Unified extraction — POST /api/documents/extract
+ * Works for .docx (Word), .xlsx and .csv (Excel/CSV).
+ *
+ * Flow:
+ *  1. No mapping passed  → server returns { needs_mapping, columns } → show modal
+ *  2. Mapping passed     → server extracts and returns requirements
+ */
+export async function extractRequirementsFromFile(
   file: File,
-  mapping?: ExcelColumnMapping,
-): Promise<Requirement[]> {
+  mapping?: ColumnMapping,
+): Promise<{ requirements: Requirement[]; rawText: string; needsMapping?: boolean; columns?: string[]; filename?: string }> {
   const form = new FormData();
   form.append('file', file);
-  if (mapping) form.append('mapping', JSON.stringify(mapping));
+  if (mapping?.userStory) {
+    // Send only the fields that have values — backend handles auto-detection for the rest
+    const payload: Record<string, string> = {};
+    if (mapping.userStory)          payload.userStory          = mapping.userStory;
+    if (mapping.storyId)            payload.storyId            = mapping.storyId;
+    if (mapping.title)              payload.title              = mapping.title;
+    if (mapping.priority)           payload.priority           = mapping.priority;
+    if (mapping.acceptanceCriteria) payload.acceptanceCriteria = mapping.acceptanceCriteria;
+    form.append('columnMapping', JSON.stringify(payload));
+  }
 
-  const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/excel/extract-requirements`, {
+  const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/documents/extract`, {
     method: 'POST',
     body: form,
   });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: 'Excel extraction failed' }));
-    throw new Error(typeof err.detail === 'string' ? err.detail.replace(/[\r\n]/g, ' ') : 'Failed to extract from Excel');
+    const err = await res.json().catch(() => ({ detail: 'Extraction failed' }));
+    throw new Error(typeof err.detail === 'string' ? err.detail.replace(/[\r\n]/g, ' ') : 'Failed to extract requirements');
   }
 
   const data = await res.json();
-  return normaliseRequirements(data.requirements);
-}
 
-export async function previewExcelColumns(file: File): Promise<string[]> {
-  const form = new FormData();
-  form.append('file', file);
+  // Spreadsheet with no mapping — tell UI to open the column-mapping modal
+  if (data.needs_mapping) {
+    return { requirements: [], rawText: '', needsMapping: true, columns: data.columns, filename: data.filename };
+  }
 
-  const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/excel/columns`, {
-    method: 'POST',
-    body: form,
-  });
+  // Word: also extract raw text client-side for the Raw tab
+  let rawText = data.raw_text ?? '';
+  if (!rawText && file.name.toLowerCase().endsWith('.docx')) {
+    rawText = await extractRawText(file);
+  }
 
-  if (!res.ok) return [];
-  const data = await res.json();
-  return data.columns as string[];
+  return { requirements: normaliseRequirements(data.requirements), rawText };
 }
 
 export async function generateDataModels(openApiYaml: string): Promise<string> {
