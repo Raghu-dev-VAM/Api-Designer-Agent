@@ -24,7 +24,7 @@ TAGS_METADATA = [
     },
     {
         "name": "documents",
-        "description": "Unified endpoint to extract user stories from Word (.docx) or Excel/CSV files.",
+        "description": "Unified endpoint to extract user stories from Word (.docx) or Excel/CSV files — served under /api/designer/extract.",
     },
     {
         "name": "excel",

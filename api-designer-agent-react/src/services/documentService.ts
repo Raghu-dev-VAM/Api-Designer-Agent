@@ -216,7 +216,7 @@ export interface ColumnMapping {
 }
 
 /**
- * Unified extraction — POST /api/documents/extract
+ * Unified extraction — POST /api/designer/extract
  * Works for .docx (Word), .xlsx and .csv (Excel/CSV).
  *
  * Flow:
@@ -240,7 +240,7 @@ export async function extractRequirementsFromFile(
     form.append('columnMapping', JSON.stringify(payload));
   }
 
-  const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/documents/extract`, {
+  const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/designer/extract`, {
     method: 'POST',
     body: form,
   });
