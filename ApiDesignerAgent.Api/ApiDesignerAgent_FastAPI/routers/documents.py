@@ -16,7 +16,7 @@ from dependencies import get_groq_service
 from routers.designer import _clean_json
 
 logger = logging.getLogger(__name__)
-router = APIRouter(prefix="/api/designer", tags=["documents"])
+router = APIRouter(prefix="/api/documents", tags=["documents"])
 
 WORD_EXTS  = {".docx"}
 SHEET_EXTS = {".xlsx", ".csv"}

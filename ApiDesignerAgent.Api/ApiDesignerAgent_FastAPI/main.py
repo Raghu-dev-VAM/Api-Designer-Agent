@@ -13,7 +13,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import HTMLResponse
 
 from config import settings
-from routers import designer, azure, jira, confluence, excel, codegen, documents
+from routers import designer, azure, jira, confluence, excel, codegen, auth
 
 logging.basicConfig(level=logging.INFO)
 
@@ -82,13 +82,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(auth.router)
 app.include_router(designer.router)
 app.include_router(azure.router)
 app.include_router(jira.router)
 app.include_router(confluence.router)
 app.include_router(excel.router)
 app.include_router(codegen.router)
-app.include_router(documents.router)
 
 
 @app.get("/api/health", tags=["health"])

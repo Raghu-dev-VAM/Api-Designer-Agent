@@ -230,14 +230,7 @@ export async function extractRequirementsFromFile(
   const form = new FormData();
   form.append('file', file);
   if (mapping?.userStory) {
-    // Send only the fields that have values — backend handles auto-detection for the rest
-    const payload: Record<string, string> = {};
-    if (mapping.userStory)          payload.userStory          = mapping.userStory;
-    if (mapping.storyId)            payload.storyId            = mapping.storyId;
-    if (mapping.title)              payload.title              = mapping.title;
-    if (mapping.priority)           payload.priority           = mapping.priority;
-    if (mapping.acceptanceCriteria) payload.acceptanceCriteria = mapping.acceptanceCriteria;
-    form.append('columnMapping', JSON.stringify(payload));
+    form.append('userStory', mapping.userStory);
   }
 
   const res = await fetchWithTimeout(`${config.apiBaseUrl}/api/designer/extract`, {
